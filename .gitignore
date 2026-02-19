@@ -1,0 +1,6 @@
+﻿# Local/private Codex runtime files
+.codex/auth.json
+.codex/models_cache.json
+.codex/sessions/
+.codex/tmp/
+.codex/.personality_migration
