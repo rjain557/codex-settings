@@ -1,86 +1,35 @@
 ﻿---
 name: gsd-batch-plan
-description: Plan all sub-plans in a phase sequentially (headless-safe, no parallel agents) Use when the user asks for 'gsd:batch-plan', 'gsd-batch-plan', or equivalent trigger phrases.
+description: Codex-native sequential phase planning. Ensure each target phase has executable plan files before execution.
 ---
 
 # Purpose
-Create implementation plans for all sub-plans in a phase sequentially, one at a time. Headless-safe variant that avoids parallel Task spawning.
-
-Use this instead of plan-phase when running via `claude -p` (headless mode), PowerShell/bash automation scripts, CI/CD pipelines, or any non-interactive environment where parallel subagents die when the parent process exits.
-
-Each plan is created by a fresh gsd-planner agent. Plans run one at a time -- never multiple in the same message. This prevents the headless-mode race condition.
+Create missing plan artifacts for a phase in a deterministic, sequential way.
 
 # When to use
-Use when the user requests the original gsd:batch-plan flow (for example: $gsd-batch-plan).
-Also use on natural-language requests that match this behavior: Plan all sub-plans in a phase sequentially (headless-safe, no parallel agents)
+Use when a phase is pending and missing plan files, or when asked to run `$gsd-batch-plan`.
 
 # Inputs
-The user's text after invoking $gsd-batch-plan is the arguments. Parse it into required fields; if any required field is missing, ask targeted follow-up questions.
-Expected argument shape from source: <phase-number>.
-Context from source:
-```text
-Phase: <parsed-arguments>
-
-@.planning/ROADMAP.md
-@.planning/STATE.md
-```
+Expected argument: `<phase-number>`.
+Optional flags:
+- `--force`: Regenerate plan files even when they already exist.
 
 # Workflow
-Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.claude/get-shit-done/workflows/plan-phase.md
-- @C:/Users/rjain/.claude/get-shit-done/references/ui-brand.md
-Then execute this process:
-```text
-## Step 0: Resolve Phase
+1. Parse and validate phase number.
+2. Resolve phase directory under `.planning/phases/<NN>-*`.
+3. Ensure research exists for the phase.
+- If missing, run `$gsd-batch-research <phase>` first.
+4. Detect plan files (`<NN>-*-PLAN.md`).
+- If present and `--force` is not set, report skip.
+5. Create/update phase plans with atomic execution steps:
+- Objective and scope
+- File-level task list
+- Validation steps
+- Exit criteria
+6. Name plans with stable ordering (`<NN>-01-PLAN.md`, `<NN>-02-PLAN.md`, ...).
+7. Report created/updated files and next step (`$gsd-batch-execute <phase>`).
 
-Parse <parsed-arguments> to get the phase number. Look up all plans for this phase in ROADMAP.md.
-
-## Step 1: Enumerate Plans
-
-Find all plans listed under the target phase in ROADMAP.md. Build an ordered list of plan identifiers (e.g., 56-01, 56-02, 56-03).
-
-## Step 2: Load Research (if available)
-
-Check for existing research files:
-```bash
-ls .planning/phases/${PHASE}-*/RESEARCH.md 2>/dev/null
-```
-
-If research exists, load it as context for planning. If not, proceed without (planner will research inline).
-
-## Step 3: Sequential Planning Loop
-
-For each plan in order:
-1. Display which plan is being created (e.g., "Planning 56-01...")
-2. Spawn ONE gsd-planner Task agent for this plan with:
-   - Phase context from ROADMAP.md
-   - Research output (if available)
-   - Prior plan outputs (for dependency awareness)
-3. Wait for completion before proceeding to the next plan
-4. CRITICAL: Never spawn more than one Task agent per message
-
-## Step 4: Verification (Optional)
-
-After all plans are created:
-1. Optionally spawn ONE gsd-plan-checker to verify plan quality
-2. Display a summary of all created plans
-
-## Step 5: Summary
-
-After all plans are created:
-1. Display a summary table of all plans with task counts
-2. Offer next steps: "Run `$gsd-batch-execute` to execute all plans"
-
-Key constraint: NEVER spawn more than one Task agent per message. This is critical for headless reliability.
-```
-
-# Outputs / artifacts
-Produce the artifacts specified by the workflow and summarize created/updated files.
-
-# Guardrails (what not to do / how to ask for missing info)
-- Do not invent missing project files, phase numbers, or state; inspect the repo first.
-- Do not skip validation or checkpoint gates described in referenced workflows.
-- If required context is missing, ask focused questions (one small batch) and proceed after answers.
-
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\batch-plan.md
+# Guardrails
+- Plans must be executable and file-specific.
+- Do not execute implementation in this skill.
+- Do not leave placeholder-only plan content.

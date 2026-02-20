@@ -1,48 +1,37 @@
 ﻿---
 name: gsd-batch-execute
-description: Execute all plans in a phase sequentially (headless-safe, no parallel agents) Use when the user asks for 'gsd:batch-execute', 'gsd-batch-execute', or equivalent trigger phrases.
+description: Codex-native sequential phase execution. Execute each incomplete plan in order and produce matching summary artifacts.
 ---
 
 # Purpose
-Execute all plans in a phase sequentially, one at a time. Headless-safe variant of execute-phase that avoids parallel Task spawning.
-
-Use this instead of execute-phase when running via `claude -p` (headless mode), PowerShell/bash automation scripts, CI/CD pipelines, or any non-interactive environment where parallel subagents die when the parent process exits.
-
-Each plan is executed by a fresh gsd-executor agent. Plans run one at a time -- never multiple in the same message. This prevents the headless-mode race condition.
+Execute a phase end-to-end by running incomplete plans sequentially in write mode.
 
 # When to use
-Use when the user requests the original gsd:batch-execute flow (for example: $gsd-batch-execute).
-Also use on natural-language requests that match this behavior: Execute all plans in a phase sequentially (headless-safe, no parallel agents)
+Use when asked to run `$gsd-batch-execute` or when a phase has plans ready for implementation.
 
 # Inputs
-The user's text after invoking $gsd-batch-execute is the arguments. Parse it into required fields; if any required field is missing, ask targeted follow-up questions.
-Expected argument shape from source: <phase-number>.
-Context from source:
-```text
-Phase: <parsed-arguments>
-
-@.planning/ROADMAP.md
-@.planning/STATE.md
-```
+Expected argument: `<phase-number>`.
+Optional flags:
+- `--stop-on-failure`: Stop on first failed plan.
 
 # Workflow
-Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.claude/get-shit-done/workflows/batch-execute.md
-- @C:/Users/rjain/.claude/get-shit-done/references/ui-brand.md
-Then execute this process:
-```text
-Execute the batch-execute workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/batch-execute.md end-to-end.
-Preserve all workflow gates (sequential execution, spot-check verification, state updates, routing).
-Key constraint: NEVER spawn more than one Task agent per message. This is critical for headless reliability.
-```
+1. Parse and validate phase number.
+2. Resolve phase directory under `.planning/phases/<NN>-*`.
+3. Ensure planning exists.
+- If no plan files are present, run `$gsd-batch-plan <phase>`.
+4. Build ordered execution list from `<NN>-*-PLAN.md`.
+5. For each plan in order:
+- Skip if matching summary exists (`<NN>-*-SUMMARY.md`).
+- Read the plan and implement tasks in write mode.
+- Run plan validation checks.
+- Create/update matching summary file with outcomes and remaining risks.
+- If plan fails:
+- With `--stop-on-failure`, stop.
+- Otherwise continue to next plan and record failure.
+6. After all plans, update roadmap/state progress for completed plans/phases.
+7. Report completed plans, failed plans, and changed files.
 
-# Outputs / artifacts
-Produce the artifacts specified by the workflow and summarize created/updated files.
-
-# Guardrails (what not to do / how to ask for missing info)
-- Do not invent missing project files, phase numbers, or state; inspect the repo first.
-- Do not skip validation or checkpoint gates described in referenced workflows.
-- If required context is missing, ask focused questions (one small batch) and proceed after answers.
-
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\batch-execute.md
+# Guardrails
+- Sequential only, no parallel phase-plan execution.
+- Do not mark plan complete without a matching summary file.
+- Do not mark phase complete if incomplete plans remain.
