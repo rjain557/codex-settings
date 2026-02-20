@@ -18,9 +18,9 @@ param(
     [int]$ExecuteTimeout = 60,
     [int]$ReviewTimeout = 60,
     [int]$VerifyTimeout = 20,
-    [string]$PrepModel = "",
-    [string]$ExecuteModel = "",
-    [string]$ReviewModel = "",
+    [string]$PrepModel = "gpt-5.3-codex-extra-high",
+    [string]$ExecuteModel = "gpt-5.3-codex-high",
+    [string]$ReviewModel = "gpt-5.3-codex-extra-high",
     [int]$MaxParallel = 3
 )
 
@@ -740,6 +740,7 @@ Write-Host "  Exec failures:    $($stats.ExecFailed)" -ForegroundColor $(if ($st
 Write-Host "  Stop reason:      $stopReason" -ForegroundColor Yellow
 Write-Host "  Duration:         ${totalDuration}m" -ForegroundColor White
 Write-Host "  Log:              $logFile" -ForegroundColor DarkGray
+
 
 
 

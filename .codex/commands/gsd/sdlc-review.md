@@ -1,6 +1,6 @@
 ﻿---
 name: gsd:sdlc-review
-description: Run SDLC review and generate parseable health/finding reports
+description: Run SDLC review, generate parseable health/finding reports, and create remediation phases when needed
 argument-hint: "[--layer=frontend|backend|database|auth]"
 allowed-tools:
   - Read
@@ -12,6 +12,7 @@ allowed-tools:
 ---
 <objective>
 Run SDLC code review and refresh `docs/review/*` reports used by remediation loops.
+When review health is below 100 or findings exist, create actionable remediation phases so auto-dev can continue toward 100/100.
 </objective>
 <context>
 Options: $ARGUMENTS
@@ -45,5 +46,19 @@ Options: $ARGUMENTS
    - Design parity result (counts + top missing items)
    - Spec parity result (counts + top mismatches)
    - Remote-agent result (implemented vs missing evidence)
-8) Return top risks and recommended remediation focus.
+8) Determine whether remediation phases are required:
+   - Required if health score < 100, or any Blocker/High/Medium/Low findings exist.
+   - Not required only when health is exactly 100 and findings total is 0.
+9) When remediation is required, create/update planning artifacts in the same pass:
+   - Read `.planning/ROADMAP.md` and find current unchecked phases.
+   - If no pending phase already maps to the current findings, append new unchecked phase entry/entries using next numeric phase id(s).
+   - Create corresponding phase folder(s) under `.planning/phases/NN-*` with at least one actionable `*-PLAN.md` per phase that maps directly to `docs/review/PRIORITIZED-TASKS.md` task IDs.
+   - Grouping rule:
+     - Blocker/High findings must be assigned to at least one near-term remediation phase.
+     - Medium/Low findings can be grouped into follow-on phase(s) but must still be explicitly represented.
+   - Update `.planning/STATE.md` current focus and last activity to reference the new phase ids.
+10) Add explicit evidence to `docs/review/EXECUTIVE-SUMMARY.md`:
+   - `Remediation Phases Created:` followed by phase numbers and task IDs covered.
+   - If phases were not created despite required remediation, mark review as failed and explain why.
+11) Return top risks, remediation focus, and the exact phase numbers created/updated.
 </process>
