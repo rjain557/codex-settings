@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-audit-milestone
 description: Audit milestone completion against original intent before archiving Use when the user asks for 'gsd:audit-milestone', 'gsd-audit-milestone', or equivalent trigger phrases.
 ---

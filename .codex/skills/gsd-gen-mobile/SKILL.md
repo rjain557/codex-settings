@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-mobile
 description: Generate cross-platform mobile app (iOS/Android) with React Native + Expo Use when the user asks for 'gsd:gen-mobile', 'gsd-gen-mobile', or equivalent trigger phrases.
 ---

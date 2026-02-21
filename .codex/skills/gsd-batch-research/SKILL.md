@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-batch-research
 description: Codex-native sequential phase research. Ensure each target phase has research artifacts before planning and execution.
 ---

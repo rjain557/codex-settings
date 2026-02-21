@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-pause-work
 description: Create context handoff when pausing work mid-phase Use when the user asks for 'gsd:pause-work', 'gsd-pause-work', or equivalent trigger phrases.
 ---

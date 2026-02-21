@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-verify-work
 description: Validate built features through conversational UAT Use when the user asks for 'gsd:verify-work', 'gsd-verify-work', or equivalent trigger phrases.
 ---

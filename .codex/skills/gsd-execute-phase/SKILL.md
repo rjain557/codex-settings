@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-execute-phase
 description: Execute all plans in a phase with wave-based parallelization Use when the user asks for 'gsd:execute-phase', 'gsd-execute-phase', or equivalent trigger phrases.
 ---

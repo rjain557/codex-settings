@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-scoping
 description: Run the gsd:scoping workflow. Use when the user asks for 'gsd:scoping', 'gsd-scoping', or equivalent trigger phrases.
 ---

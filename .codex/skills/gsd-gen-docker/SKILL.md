@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-docker
 description: Generate Dockerfiles, docker-compose, and container orchestration config Use when the user asks for 'gsd:gen-docker', 'gsd-gen-docker', or equivalent trigger phrases.
 ---

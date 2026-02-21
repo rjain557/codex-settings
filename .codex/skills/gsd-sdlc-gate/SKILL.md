@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-sdlc-gate
 description: Check entrance/exit criteria for an SDLC phase (A-R) Use when the user asks for 'gsd:sdlc-gate', 'gsd-sdlc-gate', or equivalent trigger phrases.
 ---

@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-agent
 description: Generate cross-platform remote agent (Mac/Linux/Windows) with optional system tray UI Use when the user asks for 'gsd:gen-agent', 'gsd-gen-agent', or equivalent trigger phrases.
 ---

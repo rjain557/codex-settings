@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-new-project
 description: Initialize a new project with deep context gathering and PROJECT.md Use when the user asks for 'gsd:new-project', 'gsd-new-project', or equivalent trigger phrases.
 ---

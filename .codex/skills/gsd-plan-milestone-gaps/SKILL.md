@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-plan-milestone-gaps
 description: Create phases to close all gaps identified by milestone audit Use when the user asks for 'gsd:plan-milestone-gaps', 'gsd-plan-milestone-gaps', or equivalent trigger phrases.
 ---

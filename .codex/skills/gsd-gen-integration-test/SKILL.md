@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-integration-test
 description: Generate xUnit integration tests from OpenAPI spec with WebApplicationFactory Use when the user asks for 'gsd:gen-integration-test', 'gsd-gen-integration-test', or equivalent trigger phrases.
 ---

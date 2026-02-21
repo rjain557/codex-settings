@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-check-todos
 description: List pending todos and select one to work on Use when the user asks for 'gsd:check-todos', 'gsd-check-todos', or equivalent trigger phrases.
 ---

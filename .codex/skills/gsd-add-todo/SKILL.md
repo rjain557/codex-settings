@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-add-todo
 description: Capture idea or task as todo from current conversation context Use when the user asks for 'gsd:add-todo', 'gsd-add-todo', or equivalent trigger phrases.
 ---

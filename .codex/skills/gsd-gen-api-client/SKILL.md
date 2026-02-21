@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-api-client
 description: Generate typed API client SDKs from OpenAPI spec (TypeScript, C#, Swift, Kotlin) Use when the user asks for 'gsd:gen-api-client', 'gsd-gen-api-client', or equivalent trigger phrases.
 ---

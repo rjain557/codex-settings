@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-mcp-server
 description: Generate MCP server from OpenAPI spec or stored procedures with stdio/SSE transports Use when the user asks for 'gsd:gen-mcp-server', 'gsd-gen-mcp-server', or equivalent trigger phrases.
 ---

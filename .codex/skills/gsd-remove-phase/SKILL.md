@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-remove-phase
 description: Remove a future phase from roadmap and renumber subsequent phases Use when the user asks for 'gsd:remove-phase', 'gsd-remove-phase', or equivalent trigger phrases.
 ---

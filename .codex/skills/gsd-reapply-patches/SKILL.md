@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-reapply-patches
 description: Reapply local modifications after a GSD update Use when the user asks for 'gsd:reapply-patches', 'gsd-reapply-patches', or equivalent trigger phrases.
 ---

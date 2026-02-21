@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-new-milestone
 description: Start a new milestone cycle â€” update PROJECT.md and route to requirements Use when the user asks for 'gsd:new-milestone', 'gsd-new-milestone', or equivalent trigger phrases.
 ---

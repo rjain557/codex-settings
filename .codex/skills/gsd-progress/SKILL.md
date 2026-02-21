@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-progress
 description: Check project progress, show context, and route to next action (execute or plan) Use when the user asks for 'gsd:progress', 'gsd-progress', or equivalent trigger phrases.
 ---

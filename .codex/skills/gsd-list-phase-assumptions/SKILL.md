@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-list-phase-assumptions
 description: Surface Claude's assumptions about a phase approach before planning Use when the user asks for 'gsd:list-phase-assumptions', 'gsd-list-phase-assumptions', or equivalent trigger phrases.
 ---

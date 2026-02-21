@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-quick
 description: Execute a quick task with GSD guarantees (atomic commits, state tracking) but skip optional agents Use when the user asks for 'gsd:quick', 'gsd-quick', or equivalent trigger phrases.
 ---

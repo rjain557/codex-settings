@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-db-migration
 description: Generate idempotent database migration scripts with rollback (SQL Server/PostgreSQL) Use when the user asks for 'gsd:gen-db-migration', 'gsd-gen-db-migration', or equivalent trigger phrases.
 ---

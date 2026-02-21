@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-extension
 description: Generate cross-browser extension (Chrome/Edge/Safari) with Manifest V3 Use when the user asks for 'gsd:gen-extension', 'gsd-gen-extension', or equivalent trigger phrases.
 ---

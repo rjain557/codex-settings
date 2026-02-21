@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-code-review
 description: Run comprehensive multi-agent code review with auto-detection for web apps, APIs, databases, MCP servers, mobile apps, browser extensions, and remote agents Use when the user asks for 'gsd:code-review', 'gsd-code-review', or equivalent trigger phrases.
 ---

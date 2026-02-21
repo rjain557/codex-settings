@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-debug
 description: Systematic debugging with persistent state across context resets Use when the user asks for 'gsd:debug', 'gsd-debug', or equivalent trigger phrases.
 ---

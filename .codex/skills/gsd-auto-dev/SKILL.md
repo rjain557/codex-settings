@@ -23,6 +23,9 @@ Supported arguments:
 - Require `.planning/ROADMAP.md` and `.planning/STATE.md`.
 - Require `docs/review/` to be writable in write mode.
 - Require companion skills: `$gsd-batch-research`, `$gsd-batch-plan`, `$gsd-batch-execute`, `$gsd-sdlc-review`.
+- Resolve review-summary candidates before cycle start:
+  - `docs/review/EXECUTIVE-SUMMARY.md` under `.` and `./tech-web-chatai.2` (when present).
+  - If no candidate summary exists after first review run, treat as failure.
 
 2. Enforce execution mode
 - Default to write mode.
@@ -43,27 +46,32 @@ Supported arguments:
 
 5. Re-review after phase execution
 - Run `$gsd-sdlc-review` (pass `--layer` when provided).
-- Parse health from canonical `docs/review/EXECUTIVE-SUMMARY.md` as `X/100`.
-- Parse deterministic evidence section and verify it exists.
+- Parse health from every candidate summary as `X/100`.
+- Parse deterministic drift totals from:
+  - `Deterministic Drift Totals: ... TOTAL=<n>`
+- Parse mapping integrity from:
+  - `Unmapped findings: <n>`
 - Re-read pending phases from ROADMAP.
 
 6. Root-conflict and drift hardening
-- Read all candidate review summaries in known roots (`docs/review/` under `.` and `./tech-web-chatai.2` when present).
-- If health values or deterministic mismatch totals conflict across roots, classify cycle as non-clean (`REVIEW_ROOT_CONFLICT`).
+- If health values or deterministic drift totals conflict across roots, classify cycle as non-clean (`REVIEW_ROOT_CONFLICT`) and continue remediation.
+- If deterministic drift line is missing in any candidate summary, classify as non-clean (`REVIEW_PARSE_FAILURE`).
 - Parse prioritized tasks and verify findings-to-phase mapping is complete.
 - If unmapped findings exist, create remediation phases immediately and continue loop.
+- If deterministic drift total is non-zero, ensure mapped remediation phases exist for each non-zero category before next cycle.
 
 7. Stop conditions
 - Success only if all are true:
   - health is exactly `100/100`,
+  - deterministic drift total is `0`,
   - pending phase list is empty,
   - no root conflict,
   - no unmapped findings.
 - Limit: `cycle > max_cycles`.
-- Stuck guard: no phase execution occurred in a cycle and health did not improve.
+- Stuck guard: no phase execution occurred in a cycle and health/drift did not improve.
 
 8. Final output
-- Report cycles run, phases processed per cycle, failures, final health, deterministic parity state, remaining pending phases, and stop reason.
+- Report cycles run, phases processed per cycle, failures, final health, deterministic drift totals, remaining pending phases, stop reason, and exact summary paths/values used.
 
 # Outputs / artifacts
 Summarize and reference:

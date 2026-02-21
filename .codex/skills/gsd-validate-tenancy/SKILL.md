@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-validate-tenancy
 description: Validate multi-tenancy isolation across all layers (SPs, repos, services, controllers) Use when the user asks for 'gsd:validate-tenancy', 'gsd-validate-tenancy', or equivalent trigger phrases.
 ---

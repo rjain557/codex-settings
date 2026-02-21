@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-plan-phase
 description: Run the gsd:plan-phase workflow. Use when the user asks for 'gsd:plan-phase', 'gsd-plan-phase', or equivalent trigger phrases.
 ---

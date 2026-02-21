@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-settings
 description: Configure GSD workflow toggles and model profile Use when the user asks for 'gsd:settings', 'gsd-settings', or equivalent trigger phrases.
 ---

@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-help
 description: Show available GSD commands and usage guide Use when the user asks for 'gsd:help', 'gsd-help', or equivalent trigger phrases.
 ---

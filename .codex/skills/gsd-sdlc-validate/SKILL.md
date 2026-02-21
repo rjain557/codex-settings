@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-sdlc-validate
 description: Run SpecSync contract validation (OpenAPI <-> API-SP Map <-> Controllers <-> DTOs <-> SPs) Use when the user asks for 'gsd:sdlc-validate', 'gsd-sdlc-validate', or equivalent trigger phrases.
 ---

@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-sdlc-enhance
 description: Run Phase F multi-agent enhancement pipeline (component detection + wave-based enhancement) Use when the user asks for 'gsd:sdlc-enhance', 'gsd-sdlc-enhance', or equivalent trigger phrases.
 ---

@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-resume-work
 description: Resume work from previous session with full context restoration Use when the user asks for 'gsd:resume-work', 'gsd-resume-work', or equivalent trigger phrases.
 ---

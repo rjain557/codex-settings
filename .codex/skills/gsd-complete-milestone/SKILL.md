@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-complete-milestone
 description: Archive completed milestone and prepare for next version Use when the user asks for 'gsd:complete-milestone', 'gsd-complete-milestone', or equivalent trigger phrases.
 ---

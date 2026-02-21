@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-batch-execute
 description: Codex-native sequential phase execution. Execute each incomplete plan in order and produce matching summary artifacts.
 ---

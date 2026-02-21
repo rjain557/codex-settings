@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-map-codebase
 description: Analyze codebase with parallel mapper agents to produce .planning/codebase/ documents Use when the user asks for 'gsd:map-codebase', 'gsd-map-codebase', or equivalent trigger phrases.
 ---

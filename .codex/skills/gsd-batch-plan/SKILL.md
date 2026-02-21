@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-batch-plan
 description: Codex-native sequential phase planning. Ensure each target phase has executable plan files before execution.
 ---

@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-notification
 description: Generate multi-channel notification system (in-app, email, push, SMS) Use when the user asks for 'gsd:gen-notification', 'gsd-gen-notification', or equivalent trigger phrases.
 ---

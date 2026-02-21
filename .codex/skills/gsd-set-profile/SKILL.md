@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-set-profile
 description: Switch model profile for GSD agents (quality/balanced/budget) Use when the user asks for 'gsd:set-profile', 'gsd-set-profile', or equivalent trigger phrases.
 ---

@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-sdlc-reorg
 description: Run repository reorganization to SDLC v6.0 folder structure Use when the user asks for 'gsd:sdlc-reorg', 'gsd-sdlc-reorg', or equivalent trigger phrases.
 ---

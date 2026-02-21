@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-webhook
 description: Generate webhook infrastructure (outbound/inbound) with retries and dead letter queue Use when the user asks for 'gsd:gen-webhook', 'gsd-gen-webhook', or equivalent trigger phrases.
 ---

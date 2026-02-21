@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-add-phase
 description: Add phase to end of current milestone in roadmap Use when the user asks for 'gsd:add-phase', 'gsd-add-phase', or equivalent trigger phrases.
 ---

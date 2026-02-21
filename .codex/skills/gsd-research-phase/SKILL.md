@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-research-phase
 description: Run the gsd:research-phase workflow. Use when the user asks for 'gsd:research-phase', 'gsd-research-phase', or equivalent trigger phrases.
 ---

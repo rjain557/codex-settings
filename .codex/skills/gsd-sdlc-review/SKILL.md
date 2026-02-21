@@ -42,57 +42,73 @@ Optional arguments:
 3. Run deterministic parity gates (mandatory)
 - Design route parity:
   - Compare latest Figma route/screen deliverables to router definitions and screen imports.
-  - Report missing routes, missing screens, partial implementations, alias drift.
+  - Compute unresolved counts for `DESIGN_ROUTE_MISSING` and `DESIGN_SCREEN_MISSING`.
 - OpenAPI controller coverage:
   - Compare controller/action route surface to `openapi.yaml`.
   - Must explicitly cover `CouncilController` and `AgentsController` when present.
 - Remote-agent contract parity:
   - Compare endpoint sets across `openclaw-remote-agent-spec.md`, `remote-agent.md`, `openapi.yaml`, and `AgentsController`.
-- API-SP parity:
+  - Compute unresolved count for `OPENCLAW_ENDPOINT_GAP`.
+- API-SP and backend SP parity:
   - Compare `apitospmap` action and procedure references to controller methods and SQL definitions in `db/**/*.sql`.
   - Compare backend `usp_*` references to SQL procedure existence.
+  - Compute unresolved count for `BACKEND_USP_UNRESOLVED`.
 - DB-plan parity:
   - Compare planned table/procedure inventory in `db-plan.md` to SQL artifacts.
+  - Compute unresolved count for `DBPLAN_TABLE_DRIFT`.
+- Deterministic parity command (if present in repo):
+  - Run `scripts/sdlc/deterministic-parity.ps1` under canonical root.
+  - If script exists and reports unresolved mismatches, emit findings from script output.
+  - If script exists but is not runnable, emit `BLOCKER` finding `SPEC-BLOCKER-DETERMINISTIC-GATE`.
 
-4. Run layer review and quality/build checks
+4. Normalize deterministic totals (required)
+- Merge all parity counters into one parseable line in executive summary:
+  - `Deterministic Drift Totals: DESIGN_ROUTE_MISSING=<n> DESIGN_SCREEN_MISSING=<n> OPENCLAW_ENDPOINT_GAP=<n> DBPLAN_TABLE_DRIFT=<n> BACKEND_USP_UNRESOLVED=<n> TOTAL=<n>`
+- Do not hide non-zero counters as "supplemental" or informational-only.
+- Any non-zero deterministic drift counter must produce findings and remediation mapping.
+
+5. Run layer review and quality/build checks
 - Perform severity-based findings review (BLOCKER/HIGH/MEDIUM/LOW).
 - Run build/typecheck checks for in-scope layers unless explicitly skipped.
 - Build failures are BLOCKER findings.
 
-5. Generate/update review artifacts (required)
+6. Generate/update review artifacts (required)
 - `docs/review/EXECUTIVE-SUMMARY.md`
 - `docs/review/FULL-REPORT.md`
 - `docs/review/DEVELOPER-HANDOFF.md`
 - `docs/review/PRIORITIZED-TASKS.md`
 - `docs/review/TRACEABILITY-MATRIX.md`
 
-6. Enforce deterministic evidence sections
-- Include a deterministic evidence section in summary/full report with:
+7. Enforce deterministic evidence sections
+- Include deterministic evidence in summary/full report:
   - canonical root path
   - candidate root scores
   - selected latest Figma source + timestamp
   - selected latest spec sources + timestamps
-  - parity check totals and mismatches by category
+  - parity check totals by category
+  - deterministic parity command + exit status (when present)
 - Include stable finding IDs per category (`DESIGN-*`, `SPEC-*`, `OPENAPI-*`, `AGENT-*`, `DB-*`, `ROOT-*`, `PHASE-*`).
 
-7. Mandatory remediation phase mapping and generation
+8. Mandatory remediation phase mapping and generation
 - Every finding must map to a remediation phase.
 - Load existing roadmap/state and existing pending phases first.
 - If findings are unmapped, create remediation phases immediately (do not wait for user prompt), then map findings to those phases.
 - Update roadmap/state and prioritized tasks so mapping is explicit and auditable.
 - Final artifact must include `Unmapped findings: 0`.
 
-8. Health scoring and clean-state gate
+9. Health scoring and clean-state gate
 - Executive summary must include parseable health line in `X/100` format.
 - Never report `100/100` unless all are true:
-  - deterministic parity mismatches are zero,
+  - `Deterministic Drift Totals ... TOTAL=0`,
+  - all deterministic gate counters are `0`,
+  - deterministic parity command exits clean (when present),
   - build/type checks pass (or are explicitly out-of-scope with no blocker evidence),
   - no unmapped findings,
   - no root-conflict ambiguity.
 - If any deterministic drift remains, health must stay below 100 and remediation phases must exist.
 
-9. Return concise run summary
-- Report health, severity totals, deterministic mismatch totals, and remediation phases created/updated.
+10. Return concise run summary
+- Report health, severity totals, deterministic drift totals, and remediation phases created/updated.
 
 # Outputs / artifacts
 Always produce or refresh:
@@ -107,4 +123,4 @@ Always produce or refresh:
 - Do not use stale or non-latest Figma/spec sources.
 - Do not claim clean status without deterministic evidence and explicit source timestamps.
 - Do not leave findings without remediation phase mapping.
-- Do not emit `100/100` while any parity drift remains.
+- Do not emit `100/100` while any deterministic drift counter is non-zero.

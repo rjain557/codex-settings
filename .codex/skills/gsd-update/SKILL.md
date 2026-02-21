@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-update
 description: Update GSD to latest version with changelog display Use when the user asks for 'gsd:update', 'gsd-update', or equivalent trigger phrases.
 ---

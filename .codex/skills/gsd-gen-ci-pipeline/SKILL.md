@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-ci-pipeline
 description: Generate CI/CD pipeline (GitHub Actions / Azure DevOps) for build, test, and deploy Use when the user asks for 'gsd:gen-ci-pipeline', 'gsd-gen-ci-pipeline', or equivalent trigger phrases.
 ---

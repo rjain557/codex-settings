@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-join-discord
 description: Join the GSD Discord community Use when the user asks for 'gsd:join-discord', 'gsd-join-discord', or equivalent trigger phrases.
 ---

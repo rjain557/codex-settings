@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-monitoring
 description: Generate monitoring infrastructure (health checks, dashboards, alerts, runbooks) Use when the user asks for 'gsd:gen-monitoring', 'gsd-gen-monitoring', or equivalent trigger phrases.
 ---

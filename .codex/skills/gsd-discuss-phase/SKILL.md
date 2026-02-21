@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-discuss-phase
 description: Gather phase context through adaptive questioning before planning Use when the user asks for 'gsd:discuss-phase', 'gsd-discuss-phase', or equivalent trigger phrases.
 ---

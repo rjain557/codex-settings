@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-sdlc-storyboard
 description: Run storyboard-to-code generation pipeline (Phase F storyboard system) Use when the user asks for 'gsd:sdlc-storyboard', 'gsd-sdlc-storyboard', or equivalent trigger phrases.
 ---

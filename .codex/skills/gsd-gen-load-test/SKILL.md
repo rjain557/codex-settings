@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-gen-load-test
 description: Generate load test suite (k6/Artillery) from OpenAPI spec with CI integration Use when the user asks for 'gsd:gen-load-test', 'gsd-gen-load-test', or equivalent trigger phrases.
 ---

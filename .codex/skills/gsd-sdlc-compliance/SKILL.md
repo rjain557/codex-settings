@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd-sdlc-compliance
 description: Validate HIPAA/SOC2/GDPR/PCI compliance implementation against actual code Use when the user asks for 'gsd:sdlc-compliance', 'gsd-sdlc-compliance', or equivalent trigger phrases.
 ---
