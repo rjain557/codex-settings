@@ -99,7 +99,7 @@ $agentOutputDir = Join-Path $projectRoot ".planning\agent-output"
 if (-not (Test-Path $agentOutputDir)) { New-Item -Path $agentOutputDir -ItemType Directory -Force | Out-Null }
 
 $GsdHome = Join-Path $env:USERPROFILE ".codex"
-$GsdCommandsDir = Join-Path $GsdHome "commands\gsd"
+$GsdSkillsDir = Join-Path $GsdHome "skills"
 
 function Write-Log {
     param([string]$Message, [string]$Color = "White")
@@ -241,28 +241,45 @@ function Resolve-GsdCommandPrompt {
 
     $name = $Matches[1]
     $args = $Matches[2]
-    $path = Join-Path $GsdCommandsDir "$name.md"
-    if (-not (Test-Path $path)) {
-        Write-Log "    [PROMPT] Missing command file: $path (passing command as plain text)" "Yellow"
+
+    # Global skills are the source of truth for all /gsd:* prompts.
+    $candidates = @(
+        (Join-Path $GsdSkillsDir "gsd-$name\SKILL.md"),
+        (Join-Path $GsdSkillsDir "$name\SKILL.md")
+    )
+
+    $skillPath = $null
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            $skillPath = $candidate
+            break
+        }
+    }
+
+    if (-not $skillPath) {
+        Write-Log "    [PROMPT] Missing global skill file for /gsd:$name under $GsdSkillsDir (passing command as plain text)" "Yellow"
         return $Prompt
     }
 
-    $doc = Get-Content $path -Raw
+    $doc = Get-Content $skillPath -Raw
     $doc = $doc.Replace('$ARGUMENTS', $args)
 
     return @"
-Execute this GSD command exactly as written.
+Execute this GSD skill exactly as written.
 
 <COMMAND_NAME>
 /gsd:$name $args
 </COMMAND_NAME>
 
-<COMMAND_DOC>
+<SKILL_PATH>
+$skillPath
+</SKILL_PATH>
+
+<SKILL_DOC>
 $doc
-</COMMAND_DOC>
+</SKILL_DOC>
 "@
 }
-
 function New-ResolvedPromptFile {
     param([string]$Prompt, [string]$Label)
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -784,6 +801,7 @@ Write-Host "  Exec failures:    $($stats.ExecFailed)" -ForegroundColor $(if ($st
 Write-Host "  Stop reason:      $stopReason" -ForegroundColor Yellow
 Write-Host "  Duration:         ${totalDuration}m" -ForegroundColor White
 Write-Host "  Log:              $logFile" -ForegroundColor DarkGray
+
 
 
 
