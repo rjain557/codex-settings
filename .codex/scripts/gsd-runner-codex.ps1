@@ -18,14 +18,50 @@ param(
     [int]$ExecuteTimeout = 60,
     [int]$ReviewTimeout = 60,
     [int]$VerifyTimeout = 20,
-    [string]$PrepModel = "gpt-5.3-codex-extra-high",
-    [string]$ExecuteModel = "gpt-5.3-codex-high",
-    [string]$ReviewModel = "gpt-5.3-codex-extra-high",
+    [string]$PrepModel = "gpt-5.3-codex",
+    [string]$ExecuteModel = "gpt-5.3-codex",
+    [string]$ReviewModel = "gpt-5.3-codex",
+    [string]$ResearchReasoningEffort = "high",
+    [string]$PlanReasoningEffort = "xhigh",
+    [string]$ExecuteReasoningEffort = "medium",
+    [string]$ReviewReasoningEffort = "xhigh",
     [int]$MaxParallel = 3
 )
 
 $ErrorActionPreference = "Continue"
 $startTime = Get-Date
+
+function Resolve-ModelAlias {
+    param([string]$Model)
+    if (-not $Model) { return "gpt-5.3-codex" }
+
+    switch ($Model.Trim().ToLower()) {
+        "gpt-5.3-codex-high" { return "gpt-5.3-codex" }
+        "gpt-5.3-codex-extra-high" { return "gpt-5.3-codex" }
+        "gpt-5.3-codex-medium" { return "gpt-5.3-codex" }
+        default { return $Model }
+    }
+}
+
+function Resolve-ReasoningEffort {
+    param([string]$Effort)
+    if (-not $Effort) { return "" }
+
+    switch ($Effort.Trim().ToLower()) {
+        "extra-high" { return "xhigh" }
+        "x-high" { return "xhigh" }
+        "very-high" { return "xhigh" }
+        default { return $Effort.Trim().ToLower() }
+    }
+}
+
+$PrepModel = Resolve-ModelAlias $PrepModel
+$ExecuteModel = Resolve-ModelAlias $ExecuteModel
+$ReviewModel = Resolve-ModelAlias $ReviewModel
+$ResearchReasoningEffort = Resolve-ReasoningEffort $ResearchReasoningEffort
+$PlanReasoningEffort = Resolve-ReasoningEffort $PlanReasoningEffort
+$ExecuteReasoningEffort = Resolve-ReasoningEffort $ExecuteReasoningEffort
+$ReviewReasoningEffort = Resolve-ReasoningEffort $ReviewReasoningEffort
 
 function Write-Banner {
     param([string]$Text, [string]$Color = "Cyan")
@@ -252,9 +288,14 @@ function Get-LatestTextLine {
 }
 
 function Build-CodexExecCommand {
-    param([string]$PromptFile, [string]$Model)
+    param(
+        [string]$PromptFile,
+        [string]$Model,
+        [string]$ReasoningEffort = ""
+    )
     $cmd = "type `"$PromptFile`" | `"$script:CodexExe`" exec - --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd `"$projectRoot`""
     if ($Model) { $cmd += " -m $Model" }
+    if ($ReasoningEffort) { $cmd += " -c model_reasoning_effort=$ReasoningEffort" }
     return $cmd
 }
 
@@ -263,7 +304,8 @@ function Invoke-CodexWithTimeout {
         [string]$Prompt,
         [int]$TimeoutMinutes,
         [string]$Label,
-        [string]$Model = ""
+        [string]$Model = "",
+        [string]$ReasoningEffort = ""
     )
 
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -272,7 +314,7 @@ function Invoke-CodexWithTimeout {
     $errFile = Join-Path $agentOutputDir "${safe}-${timestamp}.stderr"
 
     $promptFile = New-ResolvedPromptFile -Prompt $Prompt -Label $Label
-    $cmd = Build-CodexExecCommand -PromptFile $promptFile -Model $Model
+    $cmd = Build-CodexExecCommand -PromptFile $promptFile -Model $Model -ReasoningEffort $ReasoningEffort
 
     Write-Log "    [RUN] $Label (timeout=${TimeoutMinutes}m)" "DarkCyan"
 
@@ -454,13 +496,13 @@ function Get-PrepPipelineEntry {
 
     if (-not $SkipResearch -and -not (Test-PhaseHasResearch $PhaseNum)) {
         $pf = New-ResolvedPromptFile -Prompt "/gsd:batch-research $PhaseNum" -Label "prep-research-phase-$PhaseNum"
-        $commands += Build-CodexExecCommand -PromptFile $pf -Model $PrepModel
+        $commands += Build-CodexExecCommand -PromptFile $pf -Model $PrepModel -ReasoningEffort $ResearchReasoningEffort
         $steps += "research"
     }
 
     if (-not (Test-PhaseHasPlans $PhaseNum)) {
         $pf = New-ResolvedPromptFile -Prompt "/gsd:batch-plan $PhaseNum" -Label "prep-plan-phase-$PhaseNum"
-        $commands += Build-CodexExecCommand -PromptFile $pf -Model $PrepModel
+        $commands += Build-CodexExecCommand -PromptFile $pf -Model $PrepModel -ReasoningEffort $PlanReasoningEffort
         $steps += "plan"
     }
 
@@ -579,7 +621,7 @@ function Invoke-SequentialExecution {
             continue
         }
 
-        $res = Invoke-CodexWithTimeout -Prompt "$execSkill $p" -TimeoutMinutes $ExecuteTimeout -Label "execute-phase-$p" -Model $ExecuteModel
+        $res = Invoke-CodexWithTimeout -Prompt "$execSkill $p" -TimeoutMinutes $ExecuteTimeout -Label "execute-phase-$p" -Model $ExecuteModel -ReasoningEffort $ExecuteReasoningEffort
         if (-not $res.Success) {
             $failed++
             continue
@@ -593,7 +635,7 @@ function Invoke-SequentialExecution {
 
 function Invoke-FullReview {
     param([int]$Iteration)
-    return Invoke-CodexWithTimeout -Prompt "/gsd:sdlc-review" -TimeoutMinutes $ReviewTimeout -Label "sdlc-review-iter-$Iteration" -Model $ReviewModel
+    return Invoke-CodexWithTimeout -Prompt "/gsd:sdlc-review" -TimeoutMinutes $ReviewTimeout -Label "sdlc-review-iter-$Iteration" -Model $ReviewModel -ReasoningEffort $ReviewReasoningEffort
 }
 
  $script:CodexExe = Resolve-CodexCommand
@@ -638,6 +680,8 @@ Write-Host "  Project: $projectName" -ForegroundColor White
 Write-Host "  Root:    $projectRoot" -ForegroundColor DarkGray
 Write-Host "  Range:   $StartPhase-$EndPhase" -ForegroundColor White
 Write-Host "  Phases:  $($targetPhases -join ', ')" -ForegroundColor White
+Write-Host "  Models:  prep=$PrepModel execute=$ExecuteModel review=$ReviewModel" -ForegroundColor DarkGray
+Write-Host "  Reason:  research=$ResearchReasoningEffort plan=$PlanReasoningEffort execute=$ExecuteReasoningEffort review=$ReviewReasoningEffort" -ForegroundColor DarkGray
 Write-Host ""
 
 if ($DryRun) {
