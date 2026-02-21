@@ -142,11 +142,28 @@ Optional arguments:
   - `git add -A`
   - `git commit -m "<executive-summary-line>"`
   - `git push origin <current-branch>`
-- If commit/push fails, emit `ROOT-BLOCKER-PUSH-FAILED`.
-- Record commit message, SHA, branch, and push result in review artifacts.
+- If publish fails, run automatic remediation loop before stopping (max 3 retries):
+  - If commit returns "nothing to commit", treat as commit success and continue to push HEAD.
+  - If push rejects with non-fast-forward/diverged:
+    - `git fetch origin`
+    - `git pull --rebase origin <current-branch>`
+    - retry push.
+  - If push fails due missing upstream:
+    - `git push -u origin <current-branch>`
+  - If push fails due protected/default branch restrictions:
+    - create fallback branch `review/<yyyyMMdd>-<shortsha>`
+    - `git push -u origin <fallback-branch>`
+    - continue only after successful push to fallback branch.
+  - If push fails due transient artifacts (known large/generated paths):
+    - unstage/remove known transient artifacts from commit (e.g. `node_modules`, build outputs, temp logs),
+    - recommit with same executive-summary subject,
+    - retry push.
+- Do not proceed to success reporting until commit+push succeeds on either primary or fallback branch.
+- If all remediation retries fail, emit `ROOT-BLOCKER-PUSH-FAILED` and stop.
+- Record commit message, SHA, target branch, retry count, remediation actions, and final push result in review artifacts.
 
 14. Return concise run summary
-- Report health, severity totals, deterministic drift totals, stale-report mismatch count, publication commit SHA/branch/message, and remediation phases created/updated.
+- Report health, severity totals, deterministic drift totals, stale-report mismatch count, publication commit SHA/branch/message, push-retry outcome, and remediation phases created/updated.
 
 # Outputs / artifacts
 Always produce or refresh:
