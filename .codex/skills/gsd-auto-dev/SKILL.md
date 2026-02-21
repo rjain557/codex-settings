@@ -66,7 +66,8 @@ Supported arguments:
   - deterministic drift total is `0`,
   - pending phase list is empty,
   - no root conflict,
-  - no unmapped findings.
+  - no unmapped findings,
+  - a final confirmation `$gsd-sdlc-review still reports `100/100` and drift total `0` after no execution work in between.
 - Limit: `cycle > max_cycles`.
 - Stuck guard: no phase execution occurred in a cycle and health/drift did not improve.
 
