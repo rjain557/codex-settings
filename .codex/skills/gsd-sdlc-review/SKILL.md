@@ -15,100 +15,130 @@ Optional arguments:
 - `--skip-build` (allowed, but deterministic parity checks are still mandatory)
 
 # Workflow
-1. Resolve canonical project root deterministically
+1. Mandatory pre-review checkpoint and milestone rotation
+- Read current milestone name from `.planning/ROADMAP.md` (preferred) or `.planning/STATE.md`.
+- Use that milestone name as the Git commit message **exactly**.
+- Create and push a pre-review checkpoint to GitHub:
+  - `git add -A`
+  - `git commit -m "<milestone-name>"`
+  - `git push origin <current-branch>`
+- If push fails, emit `ROOT-BLOCKER-PUSH-FAILED` and stop review.
+- Close previous milestone and open the next milestone before continuing:
+  - run `gsd:complete-milestone` non-interactively (assume yes)
+  - run `gsd:new-milestone` non-interactively (assume yes)
+- Record milestone name, commit SHA, branch, and push result in review artifacts.
+
+2. Resolve canonical project root deterministically
 - Evaluate candidate roots: `.` and `./tech-web-chatai.2`.
-- Score each root by presence of required assets:
+- Score each root by required asset groups:
   - `.planning/ROADMAP.md`
   - `.planning/STATE.md`
   - `docs/spec/`
   - `docs/review/`
   - `design/figma/` (or versioned equivalents)
   - source trees (`src/Client`, `src/Server`, `db`)
-- Select highest-scoring root. If tie, select lexicographically stable path.
-- Record selected root and candidate scores in review artifacts.
+- Select highest-scoring root. If tie, choose lexicographically stable path.
+- Record root and candidate scores in artifacts.
 
-2. Resolve latest design/spec sources (mandatory every run)
-- Identify latest Figma deliverable version by highest version folder and latest modified timestamp.
-- Identify latest specification artifacts from `docs/spec/`:
-  - `ui-contract.md`
-  - `openapi.yaml` (or `.json`)
-  - `apitospmap.md` (or canonical API-SP map)
+3. Run mandatory implementation evidence census (new hard gate)
+- Count files by executable/schematic types in selected root:
+  - `*.cs`, `*.csproj`, `*.sln`
+  - `*.ts`, `*.tsx`, `*.js`
+  - `*.sql`
+- Record exact counts in executive/full report.
+- If all core implementation counts are zero, emit `ROOT-BLOCKER-NO-IMPLEMENTATION` and cap health at <=20.
+
+4. Resolve latest design/spec sources (mandatory every run)
+- Identify latest **Figma deliverable** by version folder and timestamp.
+- Exclude prompt/templates from being treated as design deliverables (e.g., files under `docs/**/templates/**`).
+- Identify latest canonical spec artifacts from `docs/spec/`:
+  - `ui-contract.md` (or canonical equivalent)
+  - `openapi.yaml`/`openapi.json`
+  - `apitospmap.csv`/`apitospmap.md` (or canonical API-SP map)
   - `db-plan.md`
   - `remote-agent.md`
   - `openclaw-remote-agent-spec.md`
-- Record exact source file paths and timestamps in artifacts.
-- If required design/spec artifacts are missing, emit BLOCKER findings.
+- Record exact file paths + timestamps for all selected sources.
+- Missing required design/spec artifacts are BLOCKER findings.
 
-3. Run deterministic parity gates (mandatory)
+5. Run deterministic parity gates (mandatory)
 - Design route parity:
-  - Compare latest Figma route/screen deliverables to router definitions and screen imports.
-  - Compute unresolved counts for `DESIGN_ROUTE_MISSING` and `DESIGN_SCREEN_MISSING`.
+  - Compare latest Figma routes/screens against router definitions and screen imports.
+  - Compute `DESIGN_ROUTE_MISSING`, `DESIGN_SCREEN_MISSING`.
 - OpenAPI controller coverage:
-  - Compare controller/action route surface to `openapi.yaml`.
-  - Must explicitly cover `CouncilController` and `AgentsController` when present.
+  - Compare controller/action surface to `openapi`.
+  - Explicitly include `CouncilController` and `AgentsController` when present.
 - Remote-agent contract parity:
-  - Compare endpoint sets across `openclaw-remote-agent-spec.md`, `remote-agent.md`, `openapi.yaml`, and `AgentsController`.
-  - Compute unresolved count for `OPENCLAW_ENDPOINT_GAP`.
+  - Compare endpoint sets across `openclaw-remote-agent-spec.md`, `remote-agent.md`, `openapi`, and `AgentsController`.
+  - Compute `OPENCLAW_ENDPOINT_GAP`.
 - API-SP and backend SP parity:
-  - Compare `apitospmap` action and procedure references to controller methods and SQL definitions in `db/**/*.sql`.
+  - Compare API-SP map operations to controller methods and SQL SP definitions in `db/**/*.sql`.
   - Compare backend `usp_*` references to SQL procedure existence.
-  - Compute unresolved count for `BACKEND_USP_UNRESOLVED`.
+  - Compute `BACKEND_USP_UNRESOLVED`.
 - DB-plan parity:
   - Compare planned table/procedure inventory in `db-plan.md` to SQL artifacts.
-  - Compute unresolved count for `DBPLAN_TABLE_DRIFT`.
-- Deterministic parity command (if present in repo):
-  - Run `scripts/sdlc/deterministic-parity.ps1` under canonical root.
-  - If script exists and reports unresolved mismatches, emit findings from script output.
-  - If script exists but is not runnable, emit `BLOCKER` finding `SPEC-BLOCKER-DETERMINISTIC-GATE`.
+  - Compute `DBPLAN_TABLE_DRIFT`.
+- Deterministic parity command:
+  - Run `scripts/sdlc/deterministic-parity.ps1` if present.
+  - If missing, emit `SPEC-BLOCKER-DETERMINISTIC-GATE-MISSING`.
+  - If present but unrunnable, emit `SPEC-BLOCKER-DETERMINISTIC-GATE`.
 
-4. Normalize deterministic totals (required)
-- Merge all parity counters into one parseable line in executive summary:
+6. Run stale-report contradiction checks (new hard gate)
+- Scan existing report artifacts (`docs/**/validation*.md`, `docs/**/report*.md`, JSON validation outputs).
+- For each concrete "EXISTS/Complete" claim with a file path, verify path existence now.
+- Emit `EVIDENCE-HIGH-STALEREPORT` for mismatches with path-level evidence.
+- Never inherit health from historical reports.
+
+7. Normalize deterministic totals (required)
+- Output one parseable line:
   - `Deterministic Drift Totals: DESIGN_ROUTE_MISSING=<n> DESIGN_SCREEN_MISSING=<n> OPENCLAW_ENDPOINT_GAP=<n> DBPLAN_TABLE_DRIFT=<n> BACKEND_USP_UNRESOLVED=<n> TOTAL=<n>`
-- Do not hide non-zero counters as "supplemental" or informational-only.
-- Any non-zero deterministic drift counter must produce findings and remediation mapping.
+- Any non-zero counter must create findings and remediation mapping.
 
-5. Run layer review and quality/build checks
-- Perform severity-based findings review (BLOCKER/HIGH/MEDIUM/LOW).
+8. Run layer review and quality/build checks
+- Perform severity review (BLOCKER/HIGH/MEDIUM/LOW).
 - Run build/typecheck checks for in-scope layers unless explicitly skipped.
-- Build failures are BLOCKER findings.
+- Build/typecheck failure is BLOCKER.
+- If no runnable build surfaces exist, emit BLOCKER (`ROOT-BLOCKER-NO-BUILD-SURFACE`).
 
-6. Generate/update review artifacts (required)
+9. Enforce line-level evidence quality
+- Each finding must include at least one concrete evidence pointer:
+  - file path + line, or
+  - deterministic command output summary with artifact path.
+- Avoid generic claims without evidence.
+
+10. Generate/update review artifacts (required)
 - `docs/review/EXECUTIVE-SUMMARY.md`
 - `docs/review/FULL-REPORT.md`
 - `docs/review/DEVELOPER-HANDOFF.md`
 - `docs/review/PRIORITIZED-TASKS.md`
 - `docs/review/TRACEABILITY-MATRIX.md`
 
-7. Enforce deterministic evidence sections
-- Include deterministic evidence in summary/full report:
-  - canonical root path
-  - candidate root scores
-  - selected latest Figma source + timestamp
-  - selected latest spec sources + timestamps
-  - parity check totals by category
-  - deterministic parity command + exit status (when present)
-- Include stable finding IDs per category (`DESIGN-*`, `SPEC-*`, `OPENAPI-*`, `AGENT-*`, `DB-*`, `ROOT-*`, `PHASE-*`).
-
-8. Mandatory remediation phase mapping and generation
+11. Mandatory remediation phase mapping and generation
 - Every finding must map to a remediation phase.
-- Load existing roadmap/state and existing pending phases first.
-- If findings are unmapped, create remediation phases immediately (do not wait for user prompt), then map findings to those phases.
-- Update roadmap/state and prioritized tasks so mapping is explicit and auditable.
+- Load existing roadmap/state and pending phases first.
+- If missing, bootstrap:
+  - `.planning/PROJECT.md`
+  - `.planning/REQUIREMENTS.md`
+  - `.planning/ROADMAP.md`
+  - `.planning/STATE.md`
+- Create remediation phases immediately for unmapped findings.
 - Final artifact must include `Unmapped findings: 0`.
 
-9. Health scoring and clean-state gate
-- Executive summary must include parseable health line in `X/100` format.
+12. Health scoring and clean-state gate
+- Executive summary must include parseable health line `X/100`.
 - Never report `100/100` unless all are true:
-  - `Deterministic Drift Totals ... TOTAL=0`,
-  - all deterministic gate counters are `0`,
-  - deterministic parity command exits clean (when present),
-  - build/type checks pass (or are explicitly out-of-scope with no blocker evidence),
+  - deterministic totals `TOTAL=0`,
+  - all parity counters are `0`,
+  - deterministic parity command exits clean,
+  - implementation census is non-zero for required layers,
+  - build/typecheck pass,
   - no unmapped findings,
-  - no root-conflict ambiguity.
-- If any deterministic drift remains, health must stay below 100 and remediation phases must exist.
+  - no root ambiguity,
+  - no stale-report contradictions remaining.
+- If implementation census is zero, health must remain <=20.
 
-10. Return concise run summary
-- Report health, severity totals, deterministic drift totals, and remediation phases created/updated.
+13. Return concise run summary
+- Report health, severity totals, deterministic drift totals, stale-report mismatch count, milestone checkpoint SHA/branch, and remediation phases created/updated.
 
 # Outputs / artifacts
 Always produce or refresh:
