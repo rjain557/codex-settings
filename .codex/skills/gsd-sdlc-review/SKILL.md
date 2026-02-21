@@ -15,18 +15,11 @@ Optional arguments:
 - `--skip-build` (allowed, but deterministic parity checks are still mandatory)
 
 # Workflow
-1. Mandatory pre-review checkpoint and milestone rotation
-- Read current milestone name from `.planning/ROADMAP.md` (preferred) or `.planning/STATE.md`.
-- Use that milestone name as the Git commit message **exactly**.
-- Create and push a pre-review checkpoint to GitHub:
-  - `git add -A`
-  - `git commit -m "<milestone-name>"`
-  - `git push origin <current-branch>`
-- If push fails, emit `ROOT-BLOCKER-PUSH-FAILED` and stop review.
-- Close previous milestone and open the next milestone before continuing:
+1. Mandatory milestone rotation before review
+- Close previous milestone and open the next milestone before review:
   - run `gsd:complete-milestone` non-interactively (assume yes)
   - run `gsd:new-milestone` non-interactively (assume yes)
-- Record milestone name, commit SHA, branch, and push result in review artifacts.
+- Record previous milestone id, new milestone id, and branch in review artifacts.
 
 2. Resolve canonical project root deterministically
 - Evaluate candidate roots: `.` and `./tech-web-chatai.2`.
@@ -137,8 +130,23 @@ Optional arguments:
   - no stale-report contradictions remaining.
 - If implementation census is zero, health must remain <=20.
 
-13. Return concise run summary
-- Report health, severity totals, deterministic drift totals, stale-report mismatch count, milestone checkpoint SHA/branch, and remediation phases created/updated.
+13. Mandatory post-review publication commit to GitHub
+- After artifacts are generated, build commit message from `docs/review/EXECUTIVE-SUMMARY.md`:
+  - Use a concise one-line executive summary derived from the report.
+  - Preferred source order:
+    1) explicit one-line summary line if present,
+    2) `Health: X/100` + top finding id,
+    3) first meaningful sentence in executive summary body.
+  - Normalize commit subject to a single line and keep <= 120 chars.
+- Commit and push review outputs:
+  - `git add -A`
+  - `git commit -m "<executive-summary-line>"`
+  - `git push origin <current-branch>`
+- If commit/push fails, emit `ROOT-BLOCKER-PUSH-FAILED`.
+- Record commit message, SHA, branch, and push result in review artifacts.
+
+14. Return concise run summary
+- Report health, severity totals, deterministic drift totals, stale-report mismatch count, publication commit SHA/branch/message, and remediation phases created/updated.
 
 # Outputs / artifacts
 Always produce or refresh:
