@@ -1,10 +1,10 @@
-﻿---
+---
 name: gsd-auto-dev
-description: Codex-native autonomous SDLC remediation loop. In write mode, process all pending phases by ensuring research and planning exist, execute each phase, rerun SDLC review, and repeat until health is 100/100 with no pending remediation phases.
+description: Codex-native autonomous SDLC remediation loop. In write mode, process all pending phases, run deterministic SDLC review each cycle, resolve drift findings into remediation phases, and continue until health is 100/100 with no pending remediation phases.
 ---
 
 # Purpose
-Run end-to-end remediation in Codex write mode until SDLC health is clean.
+Run end-to-end remediation in Codex write mode until SDLC health is truly clean.
 
 # When to use
 Use for requests like "auto-dev", "run remediation loop", "fix all pending SDLC phases", or "keep iterating until clean".
@@ -38,21 +38,32 @@ Supported arguments:
 - Planning gate: if phase directory has no `*-PLAN.md`, run `$gsd-batch-plan <phase>`.
 - Execute gate: run `$gsd-batch-execute <phase>`.
 - If a stage fails:
-- With `--stop-on-failure`, stop immediately and report failure.
-- Otherwise, record failure and continue with next pending phase.
+  - With `--stop-on-failure`, stop immediately and report failure.
+  - Otherwise, record failure and continue with next pending phase.
 
 5. Re-review after phase execution
 - Run `$gsd-sdlc-review` (pass `--layer` when provided).
-- Parse health from `docs/review/EXECUTIVE-SUMMARY.md` as `X/100`.
+- Parse health from canonical `docs/review/EXECUTIVE-SUMMARY.md` as `X/100`.
+- Parse deterministic evidence section and verify it exists.
 - Re-read pending phases from ROADMAP.
 
-6. Stop conditions
-- Success: health is exactly `100/100` and pending phase list is empty.
+6. Root-conflict and drift hardening
+- Read all candidate review summaries in known roots (`docs/review/` under `.` and `./tech-web-chatai.2` when present).
+- If health values or deterministic mismatch totals conflict across roots, classify cycle as non-clean (`REVIEW_ROOT_CONFLICT`).
+- Parse prioritized tasks and verify findings-to-phase mapping is complete.
+- If unmapped findings exist, create remediation phases immediately and continue loop.
+
+7. Stop conditions
+- Success only if all are true:
+  - health is exactly `100/100`,
+  - pending phase list is empty,
+  - no root conflict,
+  - no unmapped findings.
 - Limit: `cycle > max_cycles`.
 - Stuck guard: no phase execution occurred in a cycle and health did not improve.
 
-7. Final output
-- Report cycles run, phases processed per cycle, failures, final health, remaining pending phases, and stop reason.
+8. Final output
+- Report cycles run, phases processed per cycle, failures, final health, deterministic parity state, remaining pending phases, and stop reason.
 
 # Outputs / artifacts
 Summarize and reference:
@@ -60,6 +71,7 @@ Summarize and reference:
 - `docs/review/FULL-REPORT.md`
 - `docs/review/DEVELOPER-HANDOFF.md`
 - `docs/review/PRIORITIZED-TASKS.md`
+- `docs/review/TRACEABILITY-MATRIX.md`
 - `.planning/ROADMAP.md`
 - `.planning/STATE.md`
 - `.planning/phases/*`
@@ -70,4 +82,4 @@ Summarize and reference:
 - Do not substitute `$gsd-code-review` for `$gsd-sdlc-review` in this skill.
 - Do not skip research/planning gates before execution.
 - Do not process phases in parallel; keep order deterministic.
-- Do not claim success unless both conditions hold: `100/100` and no pending phases.
+- Do not claim success unless all clean-state conditions are satisfied.
