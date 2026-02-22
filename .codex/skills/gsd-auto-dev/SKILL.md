@@ -1,10 +1,10 @@
 ---
 name: gsd-auto-dev
-description: Codex-native autonomous SDLC remediation loop. In write mode, process all pending phases, run deterministic SDLC review each cycle, resolve drift findings into remediation phases, and continue until health is 100/100 with no pending remediation phases.
+description: Codex-native autonomous SDLC remediation loop. In write mode, process pending phases, run deterministic SDLC review each cycle, then require final line-level code-completeness confirmation via gsd-sdlc-finalreview before success.
 ---
 
 # Purpose
-Run end-to-end remediation in Codex write mode until SDLC health is truly clean.
+Run end-to-end remediation in Codex write mode until SDLC health is truly clean and final code-completeness review is confirmed on unchanged code.
 
 # When to use
 Use for requests like "auto-dev", "run remediation loop", "fix all pending SDLC phases", or "keep iterating until clean".
@@ -22,7 +22,7 @@ Supported arguments:
 1. Preflight
 - Require `.planning/ROADMAP.md` and `.planning/STATE.md`.
 - Require `docs/review/` to be writable in write mode.
-- Require companion skills: `$gsd-batch-research`, `$gsd-batch-plan`, `$gsd-batch-execute`, `$gsd-sdlc-review`.
+- Require companion skills: `$gsd-batch-research`, `$gsd-batch-plan`, `$gsd-batch-execute`, `$gsd-sdlc-review`, `$gsd-sdlc-finalreview`.
 - Resolve review-summary candidates before cycle start:
   - `docs/review/EXECUTIVE-SUMMARY.md` under `.` and `./tech-web-chatai.2` (when present).
   - If no candidate summary exists after first review run, treat as failure.
@@ -60,19 +60,47 @@ Supported arguments:
 - If unmapped findings exist, create remediation phases immediately and continue loop.
 - If deterministic drift total is non-zero, ensure mapped remediation phases exist for each non-zero category before next cycle.
 
-7. Stop conditions
+7. Final code-completeness gate (mandatory clean-candidate step)
+- If and only if cycle metrics are clean-candidate:
+  - health `100/100`,
+  - deterministic drift total `0`,
+  - pending phase list empty,
+  - no root conflict,
+  - no unmapped findings,
+  run:
+  - `$gsd-sdlc-finalreview --code-scope=generated+src --figma-version=v8 --spec-mode=phase-ae+spec`
+- Parse `docs/review/layers/finalreview-summary.json` (or `FINALREVIEW_*` output lines) for:
+  - `health`, `drift_total`, `unmapped_lines`, `coverage_percent`, `pending_remediation`, `commit_sha`, `summary_hash`, `status`, `stop_reason`.
+- If finalreview fails:
+  - classify cycle as non-clean (`FINALREVIEW_UNMAPPED` or `FINALREVIEW_PARSE_FAILURE`),
+  - create remediation phases for unmapped findings immediately,
+  - continue next cycle.
+- If finalreview passes:
+  - run `$gsd-sdlc-finalreview --confirm-only --code-scope=generated+src --figma-version=v8 --spec-mode=phase-ae+spec`.
+  - require confirmation pass with:
+    - unchanged commit SHA,
+    - identical summary hash.
+  - if confirmation fails, classify non-clean (`FINALREVIEW_CONFIRMATION_MISMATCH`) and continue loop.
+
+8. Stop conditions
 - Success only if all are true:
   - health is exactly `100/100`,
   - deterministic drift total is `0`,
   - pending phase list is empty,
   - no root conflict,
   - no unmapped findings,
-  - a final confirmation `$gsd-sdlc-review still reports `100/100` and drift total `0` after no execution work in between.
+  - finalreview pass reports:
+    - `coverage_percent=100`,
+    - `unmapped_lines=0`,
+    - `drift_total=0`,
+    - `pending_remediation=0`,
+  - finalreview confirm-only pass reports unchanged commit SHA and identical summary hash,
+  - final confirmation `$gsd-sdlc-review` still reports `100/100` and drift total `0` after no execution work in between.
 - Limit: `cycle > max_cycles`.
 - Stuck guard: no phase execution occurred in a cycle and health/drift did not improve.
 
-8. Final output
-- Report cycles run, phases processed per cycle, failures, final health, deterministic drift totals, remaining pending phases, stop reason, and exact summary paths/values used.
+9. Final output
+- Report cycles run, phases processed per cycle, failures, final health, deterministic drift totals, finalreview metrics (`coverage_percent`, `unmapped_lines`, `summary_hash`, `commit_sha`), remaining pending phases, stop reason, and exact summary paths/values used.
 
 # Outputs / artifacts
 Summarize and reference:
@@ -81,6 +109,9 @@ Summarize and reference:
 - `docs/review/DEVELOPER-HANDOFF.md`
 - `docs/review/PRIORITIZED-TASKS.md`
 - `docs/review/TRACEABILITY-MATRIX.md`
+- `docs/review/layers/finalreview-summary.json`
+- `docs/review/layers/finalreview-line-map.jsonl`
+- `docs/review/FINAL-SDLC-LINE-TRACEABILITY.md`
 - `.planning/ROADMAP.md`
 - `.planning/STATE.md`
 - `.planning/phases/*`
@@ -88,7 +119,8 @@ Summarize and reference:
 # Guardrails
 - Always run in write mode by default for auto-dev.
 - Always run `$gsd-sdlc-review` after remediation work in each cycle.
+- Always run `$gsd-sdlc-finalreview` before declaring success.
 - Do not substitute `$gsd-code-review` for `$gsd-sdlc-review` in this skill.
 - Do not skip research/planning gates before execution.
 - Do not process phases in parallel; keep order deterministic.
-- Do not claim success unless all clean-state conditions are satisfied.
+- Do not claim success unless all clean-state conditions and finalreview confirmation conditions are satisfied.

@@ -1,3 +1,9 @@
 personality = "pragmatic"
 model = "gpt-5.3-codex"
-model_reasoning_effort = "high"
+model_reasoning_effort = "xhigh"
+
+[mcp_servers.playwright]
+args = ["@playwright/mcp@latest"]
+command = "npx"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
