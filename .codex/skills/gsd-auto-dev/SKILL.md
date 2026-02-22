@@ -17,6 +17,10 @@ Supported arguments:
 - `--phase=<n>`: Optional phase filter. Only process this phase if pending.
 - `--stop-on-failure`: Stop immediately when a phase stage fails.
 - `--write` or `--read-only`: Execution mode. Default is `--write`.
+- `--project-root <path>`: Canonical root to run from when strict-root execution is required.
+- `--roadmap-path <path>`: Explicit roadmap path (typically `.planning/ROADMAP.md`).
+- `--state-path <path>`: Explicit state path (typically `.planning/STATE.md`).
+- `--strict-root`: Fail fast when root/roadmap/state are ambiguous.
 
 # Workflow
 1. Preflight
@@ -35,6 +39,13 @@ Supported arguments:
 - Read pending phases from unchecked ROADMAP phase headers: `- [ ] **Phase N:`.
 - If `--phase` is set, intersect pending list with that phase.
 - Sort ascending and process sequentially.
+- Emit progress updates every 1 minute while running long stages.
+- Each progress update must include:
+  - current stage/action (what the script is doing right now),
+  - phase counts: completed, in progress, pending,
+  - target metrics: health `100`, drift `0`, unmapped `0`,
+  - current metrics: health/drift/unmapped from latest review summary,
+  - number of git commits completed during the run.
 
 4. For each pending phase (sequential)
 - Research gate: if phase directory has no `*RESEARCH.md`, run `$gsd-batch-research <phase>`.
@@ -100,7 +111,7 @@ Supported arguments:
 - Stuck guard: no phase execution occurred in a cycle and health/drift did not improve.
 
 9. Final output
-- Report cycles run, phases processed per cycle, failures, final health, deterministic drift totals, finalreview metrics (`coverage_percent`, `unmapped_lines`, `summary_hash`, `commit_sha`), remaining pending phases, stop reason, and exact summary paths/values used.
+- Report cycles run, phases processed per cycle, failures, final health, deterministic drift totals, finalreview metrics (`coverage_percent`, `unmapped_lines`, `summary_hash`, `commit_sha`), remaining pending phases, stop reason, exact summary paths/values used, and git commits completed during the run.
 
 # Outputs / artifacts
 Summarize and reference:
