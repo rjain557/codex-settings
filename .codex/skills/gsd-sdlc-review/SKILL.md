@@ -12,6 +12,7 @@ Use when asked for `$gsd-sdlc-review`, or whenever a remediation loop requires c
 # Inputs
 Optional arguments:
 - `--layer=frontend|backend|database|auth`
+- `--review-parallelism <n>`: Max concurrent review agents for parity/layer/runtime fan-out (default `6`)
 - `--skip-build` (allowed, but deterministic parity checks are still mandatory)
 
 # Workflow
@@ -87,13 +88,14 @@ Optional arguments:
   - `Deterministic Drift Totals: DESIGN_ROUTE_MISSING=<n> DESIGN_SCREEN_MISSING=<n> OPENCLAW_ENDPOINT_GAP=<n> DBPLAN_TABLE_DRIFT=<n> BACKEND_USP_UNRESOLVED=<n> TOTAL=<n>`
 - Any non-zero counter must create findings and remediation mapping.
 
-8. Run layer review and quality/build checks
+8. Run layer review and quality/build checks (parallel multi-agent)
 - Run the `gsd-code-review` workflow semantics as a mandatory sub-flow for current-run evidence:
   - Load `C:/Users/rjain/.claude/get-shit-done/workflows/code-review.md` and `C:/Users/rjain/.claude/agents/gsd-code-reviewer.md`.
-  - Apply the same layer/wave model used by Claude `/gsd:code-review`:
-    - Wave 1 layer reviewers in parallel for detected components (`frontend`, `backend`, `database`, `auth`, plus `mcp`, `mobile`, `extension`, `agent` when present).
-    - Wave 2 cross-cutting analyzers for full review scope (`TRACEABILITY-MATRIX`, `CONTRACT-ALIGNMENT`, `DEAD-CODE`).
-    - Wave 3 build verification unless `--skip-build` is set.
+  - Apply the same layer/wave model used by Claude `/gsd:code-review` with explicit agent fan-out:
+    - Wave 1: launch one reviewer agent per detected component in parallel (`frontend`, `backend`, `database`, `auth`, plus `mcp`, `mobile`, `extension`, `agent` when present).
+    - Wave 2: launch cross-cutting analyzers in parallel (`TRACEABILITY-MATRIX`, `CONTRACT-ALIGNMENT`, `DEAD-CODE`).
+    - Wave 3: run build verification unless `--skip-build` is set.
+  - Bound parallel fan-out by `--review-parallelism` and keep deterministic artifact naming/merge order.
   - Single-layer mode (`--layer=...`) must run the corresponding reviewer and still include severity outputs for that layer.
 - Require/update layer outputs under `docs/review/layers/` for each detected in-scope component.
 - Consolidate code-review severity counts into one artifact `docs/review/layers/code-review-summary.json`.
@@ -102,10 +104,13 @@ Optional arguments:
 - Treat build/typecheck failure as BLOCKER.
 - If no runnable build surfaces exist, emit BLOCKER (`ROOT-BLOCKER-NO-BUILD-SURFACE`).
 
-9. Run mandatory runtime verification gates (new hard gate)
+9. Run mandatory runtime verification gates (parallel multi-agent hard gate)
 - Runtime gates are mandatory for every full SDLC review run and every auto-dev cycle rerun.
 - `--skip-build` does not skip runtime gates.
 - For each gate, capture concrete evidence (command, endpoint, status code/output) and write a parseable status to review artifacts.
+- Execute runtime gates using parallel groups where safe:
+  - backend API/runtime gates in parallel with frontend dependency/build gates,
+  - preserve deterministic merge/report order when aggregating results.
 - Required runtime gates:
   - API Swagger generation gate:
     - Start API in local dev profile.
@@ -234,6 +239,7 @@ Always produce or refresh:
 
 # Guardrails
 - Do not skip deterministic parity checks.
+- Do not run layer/runtime review as a single-agent serial pass when parallel fan-out is available.
 - Do not skip current-run code-review layer analysis for detected in-scope components.
 - Do not skip required runtime gates in full SDLC review or auto-dev re-review cycles.
 - Do not mark runtime gates as PASS without direct command/runtime evidence from the current run.

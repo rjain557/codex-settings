@@ -1,0 +1,904 @@
+# gsd-auto-dev-e2e.ps1
+# Global end-to-end auto-dev runner with strict-root gates, per-minute progress updates,
+# commit/push auto-retry, and final clean confirmation.
+
+[CmdletBinding()]
+param(
+    [int]$MaxOuterLoops = 500,
+    [int]$AutoDevMaxCycles = 20,
+    [string]$ProjectRoot = (Get-Location).Path,
+    [string]$RoadmapPath = ".planning/ROADMAP.md",
+    [string]$StatePath = ".planning/STATE.md",
+    [bool]$StrictRoot = $true,
+    [string[]]$SummaryPaths = @(
+        "docs/review/EXECUTIVE-SUMMARY.md",
+        "tech-web-mytest/docs/review/EXECUTIVE-SUMMARY.md"
+    ),
+    [string]$LogDir = ".planning/agent-output",
+    [string]$StatusFile = ".planning/agent-output/gsd-e2e-status.log",
+    [int]$HeartbeatSeconds = 60,
+    [switch]$OpenWindow,
+    [switch]$DryRun
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+if ($OpenWindow) {
+    $selfPath = $MyInvocation.MyCommand.Path
+    if (-not (Test-Path $selfPath)) {
+        throw "Cannot relaunch: script path not found ($selfPath)."
+    }
+
+    $argList = @(
+        "-ExecutionPolicy", "Bypass",
+        "-File", $selfPath,
+        "-MaxOuterLoops", $MaxOuterLoops,
+        "-AutoDevMaxCycles", $AutoDevMaxCycles,
+        "-ProjectRoot", $ProjectRoot,
+        "-RoadmapPath", $RoadmapPath,
+        "-StatePath", $StatePath,
+        "-LogDir", $LogDir,
+        "-StatusFile", $StatusFile,
+        "-HeartbeatSeconds", $HeartbeatSeconds,
+        "-StrictRoot:$StrictRoot"
+    )
+    foreach ($sp in @($SummaryPaths)) {
+        $argList += @("-SummaryPaths", $sp)
+    }
+    if ($DryRun) { $argList += "-DryRun" }
+
+    $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $argList -WindowStyle Normal -PassThru
+    Write-Host ("Launched gsd-auto-dev-e2e in a new PowerShell window (PID={0})." -f $proc.Id) -ForegroundColor Green
+    return
+}
+
+function Resolve-CodexCommand {
+    $cmd = Get-Command codex -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $vscodeExtRoot = Join-Path $env:USERPROFILE ".vscode\extensions"
+    if (Test-Path $vscodeExtRoot) {
+        $candidates = Get-ChildItem -Path $vscodeExtRoot -Directory -Filter "openai.chatgpt-*-win32-x64" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending
+
+        foreach ($ext in $candidates) {
+            $candidate = Join-Path $ext.FullName "bin\windows-x86_64\codex.exe"
+            if (Test-Path $candidate) { return $candidate }
+        }
+    }
+
+    return $null
+}
+
+function Ensure-CodexOnPath {
+    param([string]$CodexExePath)
+    if (-not $CodexExePath) { return }
+
+    $codexDir = Split-Path $CodexExePath -Parent
+    if (-not (($env:Path -split ';') -contains $codexDir)) {
+        $env:Path = "$env:Path;$codexDir"
+    }
+}
+
+function Resolve-GitCommand {
+    $cmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "Git\\cmd\\git.exe"),
+        (Join-Path $env:ProgramFiles "Git\\bin\\git.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Git\\cmd\\git.exe"),
+        "C:\\Program Files\\Git\\cmd\\git.exe",
+        "C:\\Program Files\\Git\\bin\\git.exe",
+        "C:\\Program Files (x86)\\Git\\cmd\\git.exe"
+    )
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) { return $candidate }
+    }
+
+    return $null
+}
+
+function Ensure-GitOnPath {
+    param([string]$GitExePath)
+    if (-not $GitExePath) { return }
+
+    $gitDir = Split-Path $GitExePath -Parent
+    if (-not (($env:Path -split ';') -contains $gitDir)) {
+        $env:Path = "$env:Path;$gitDir"
+    }
+}
+
+function Resolve-PathFromRoot {
+    param(
+        [string]$Root,
+        [string]$PathValue
+    )
+
+    $candidate = if ([System.IO.Path]::IsPathRooted($PathValue)) {
+        $PathValue
+    } else {
+        Join-Path $Root $PathValue
+    }
+
+    if (Test-Path $candidate) {
+        return (Resolve-Path -Path $candidate).Path
+    }
+
+    return [System.IO.Path]::GetFullPath($candidate)
+}
+
+function Resolve-SummaryMetrics {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) { return $null }
+    $content = Get-Content -Raw -Path $Path
+
+    $health = $null
+    $h1 = [regex]::Match($content, "(?im)^\s*Health(?:\s+Score)?\s*:\s*(\d{1,3})\s*/\s*100")
+    if ($h1.Success) {
+        $health = [int]$h1.Groups[1].Value
+    } else {
+        $h2 = [regex]::Match($content, "(?im)\bhealth(?:\s+score)?\b[^0-9]{0,20}(\d{1,3})\s*/\s*100")
+        if ($h2.Success) { $health = [int]$h2.Groups[1].Value }
+    }
+
+    $driftMatch = [regex]::Match($content, "(?im)Deterministic\s+Drift\s+Totals\s*:\s*.*?TOTAL\s*=\s*(\d+)")
+    $unmappedMatch = [regex]::Match($content, "(?im)Unmapped\s+findings\s*:\s*(\d+)")
+
+    return [PSCustomObject]@{
+        Path     = $Path
+        Parsed   = (($null -ne $health) -or $driftMatch.Success -or $unmappedMatch.Success)
+        Complete = (($null -ne $health) -and $driftMatch.Success -and $unmappedMatch.Success)
+        Health   = $health
+        Drift    = $(if ($driftMatch.Success) { [int]$driftMatch.Groups[1].Value } else { $null })
+        Unmapped = $(if ($unmappedMatch.Success) { [int]$unmappedMatch.Groups[1].Value } else { $null })
+    }
+}
+
+function Get-BestMetricSnapshot {
+    param([string[]]$Paths)
+
+    $existing = @()
+    foreach ($path in $Paths) {
+        if (Test-Path $path) {
+            $item = Get-Item $path
+            $existing += [PSCustomObject]@{
+                Path = $path
+                LastWriteTime = $item.LastWriteTime
+            }
+        }
+    }
+
+    if ($existing.Count -eq 0) { return $null }
+
+    foreach ($candidate in ($existing | Sort-Object LastWriteTime -Descending)) {
+        $parsed = Resolve-SummaryMetrics -Path $candidate.Path
+        if ($parsed -and $parsed.Parsed) { return $parsed }
+    }
+
+    return (Resolve-SummaryMetrics -Path $existing[0].Path)
+}
+
+function Get-PendingPhases {
+    param([string]$RoadmapFile)
+
+    if (-not (Test-Path $RoadmapFile)) { return @() }
+    $matches = @(Select-String -Path $RoadmapFile -Pattern '^- \[ \] \*\*Phase (\d+):' -CaseSensitive:$false)
+    $phases = @()
+
+    foreach ($m in $matches) {
+        if ($m.Matches.Count -gt 0) {
+            $phases += [int]$m.Matches[0].Groups[1].Value
+        }
+    }
+
+    return @($phases | Sort-Object -Unique)
+}
+
+function Get-CompletedPhases {
+    param([string]$RoadmapFile)
+
+    if (-not (Test-Path $RoadmapFile)) { return @() }
+    $matches = @(Select-String -Path $RoadmapFile -Pattern '^- \[[xX]\] \*\*Phase (\d+):' -CaseSensitive:$false)
+    $phases = @()
+
+    foreach ($m in $matches) {
+        if ($m.Matches.Count -gt 0) {
+            $phases += [int]$m.Matches[0].Groups[1].Value
+        }
+    }
+
+    return @($phases | Sort-Object -Unique)
+}
+
+function Get-CodeFingerprint {
+    $statusRes = Invoke-GitCapture -GitArgs @("status", "--porcelain") -AllowFail
+    if ($statusRes.ExitCode -ne 0 -or @($statusRes.Output).Count -eq 0) { return @() }
+
+    $lines = @()
+    foreach ($row in $statusRes.Output) {
+        $line = [string]$row
+        if ($line.Length -lt 3) { continue }
+        $path = if ($line.Length -gt 3) { $line.Substring(3).Trim() } else { "" }
+        if ($path -match '\s->\s') { $path = ($path -split '\s->\s')[-1].Trim() }
+
+        if ($path -match '\.(cs|csproj|sln|ts|tsx|js|jsx|sql)$') {
+            $lines += $line.Trim()
+        }
+    }
+
+    return ($lines | Sort-Object)
+}
+
+function Test-CodeFingerprintEqual {
+    param([string[]]$Left, [string[]]$Right)
+    return ((@($Left) -join "`n") -eq (@($Right) -join "`n"))
+}
+
+function Get-FirstShaFromOutput {
+    param(
+        [object[]]$Output,
+        [int]$Length = 40
+    )
+
+    if ($Length -lt 7) { $Length = 7 }
+    $pattern = "\b[0-9a-fA-F]{$Length}\b"
+
+    foreach ($row in @($Output)) {
+        $text = [string]$row
+        $match = [regex]::Match($text, $pattern)
+        if ($match.Success) {
+            return $match.Value.ToLowerInvariant()
+        }
+    }
+
+    return ""
+}
+
+function Get-FirstIntFromOutput {
+    param([object[]]$Output)
+
+    foreach ($row in @($Output)) {
+        $text = [string]$row
+        $match = [regex]::Match($text, '^\s*(\d+)\s*$')
+        if ($match.Success) {
+            return [int]$match.Groups[1].Value
+        }
+    }
+
+    return $null
+}
+
+function Get-NestedGitRepoPaths {
+    param([string]$RootPath)
+
+    if (-not (Test-Path $RootPath)) { return @() }
+    $repos = @()
+
+    $children = Get-ChildItem -Path $RootPath -Directory -ErrorAction SilentlyContinue
+    foreach ($child in $children) {
+        $gitMarker = Join-Path $child.FullName ".git"
+        if (Test-Path $gitMarker) {
+            $repos += (Resolve-Path -Path $child.FullName).Path
+        }
+    }
+
+    return @($repos | Sort-Object -Unique)
+}
+
+function Convert-ToProcessArgToken {
+    param([string]$Value)
+
+    if ($null -eq $Value) { return '""' }
+
+    # Preserve whitespace/special chars when passing a single command-line string.
+    if ($Value -match '[\s"]') {
+        return '"' + ($Value -replace '"', '\"') + '"'
+    }
+
+    return $Value
+}
+
+function Invoke-GitCapture {
+    param(
+        [string[]]$GitArgs,
+        [switch]$AllowFail
+    )
+
+    $tmpOut = [System.IO.Path]::GetTempFileName()
+    $tmpErr = [System.IO.Path]::GetTempFileName()
+
+    $output = @()
+    $exitCode = 0
+
+    try {
+        $gitCommand = if ($script:GitExe) { $script:GitExe } else { "git" }
+        $effectiveArgs = @()
+        if (
+            -not [string]::IsNullOrWhiteSpace($script:GitRepoRoot) -and
+            -not (@($GitArgs).Count -ge 2 -and $GitArgs[0] -eq "-C")
+        ) {
+            $effectiveArgs += @("-C", $script:GitRepoRoot)
+        }
+        $effectiveArgs += @($GitArgs)
+        $argumentLine = (@($effectiveArgs | ForEach-Object { Convert-ToProcessArgToken -Value ([string]$_) }) -join ' ')
+
+        $proc = Start-Process `
+            -FilePath $gitCommand `
+            -ArgumentList $argumentLine `
+            -NoNewWindow `
+            -PassThru `
+            -Wait `
+            -RedirectStandardOutput $tmpOut `
+            -RedirectStandardError $tmpErr
+
+        $exitCode = $proc.ExitCode
+        if (Test-Path $tmpOut) { $output += @(Get-Content -Path $tmpOut -ErrorAction SilentlyContinue) }
+        if (Test-Path $tmpErr) { $output += @(Get-Content -Path $tmpErr -ErrorAction SilentlyContinue) }
+    } finally {
+        Remove-Item -Path $tmpOut, $tmpErr -ErrorAction SilentlyContinue
+    }
+
+    if ((-not $AllowFail) -and $exitCode -ne 0) {
+        throw ("git {0} failed (exit {1})`n{2}" -f ($effectiveArgs -join " "), $exitCode, (@($output) -join "`n"))
+    }
+
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output   = @($output)
+    }
+}
+
+function Get-GitHeadWithRetry {
+    param(
+        [string]$RepoPath,
+        [int]$Attempts = 5,
+        [int]$DelaySeconds = 2,
+        [switch]$AllowMissing
+    )
+
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        $headRes = Invoke-GitCapture -GitArgs @("-C", $RepoPath, "rev-parse", "HEAD") -AllowFail
+        if ($headRes.ExitCode -eq 0) {
+            $sha = Get-FirstShaFromOutput -Output $headRes.Output -Length 40
+            if (-not [string]::IsNullOrWhiteSpace($sha)) {
+                return $sha
+            }
+        }
+
+        if ($attempt -lt $Attempts) {
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
+
+    if ($AllowMissing) { return "" }
+    throw "Unable to resolve git HEAD baseline for '$RepoPath' after $Attempts attempts."
+}
+
+function Initialize-CommitBaselines {
+    $script:TrackedRepos = @($script:ResolvedProjectRoot)
+    $script:TrackedRepos += @(Get-NestedGitRepoPaths -RootPath $script:ResolvedProjectRoot)
+    $script:TrackedRepos = @($script:TrackedRepos | Sort-Object -Unique)
+
+    $script:StartHeads = @{}
+    foreach ($repoPath in $script:TrackedRepos) {
+        $head = Get-GitHeadWithRetry -RepoPath $repoPath -AllowMissing
+        if (-not [string]::IsNullOrWhiteSpace($head)) {
+            $script:StartHeads[$repoPath] = $head
+        }
+    }
+
+    $script:StartHead = ""
+    if ($script:StartHeads.Contains($script:ResolvedProjectRoot)) {
+        $script:StartHead = [string]$script:StartHeads[$script:ResolvedProjectRoot]
+    }
+
+    if ([string]::IsNullOrWhiteSpace($script:StartHead) -and -not $DryRun) {
+        throw "Cannot establish root git baseline commit (start_head) for '$($script:ResolvedProjectRoot)'. Aborting to avoid incorrect commit telemetry."
+    }
+}
+
+function Ensure-GitPushSynced {
+    param(
+        [string]$StatusPath,
+        [int]$Cycle,
+        [string]$Stage,
+        [int]$MaxAttempts = 12
+    )
+
+    if ($DryRun) {
+        return [PSCustomObject]@{ Ok = $true; Status = "dry-run"; Detail = "" }
+    }
+
+    $branchLine = ""
+    $statusDetail = ""
+
+    for ($statusAttempt = 1; $statusAttempt -le 6; $statusAttempt++) {
+        $statusRes = Invoke-GitCapture -GitArgs @("status", "-sb") -AllowFail
+        if ($statusRes.ExitCode -eq 0 -and @($statusRes.Output).Count -gt 0) {
+            $branchLine = [string]$statusRes.Output[0]
+            break
+        }
+
+        $statusDetail = (@($statusRes.Output) -join "`n")
+        if ($statusAttempt -lt 6) { Start-Sleep -Seconds 2 }
+    }
+
+    $statusUnavailable = [string]::IsNullOrWhiteSpace($branchLine)
+    $needsPush = ($branchLine -match '\[ahead ') -or ($branchLine -match 'diverged')
+
+    if ($statusUnavailable) {
+        $needsPush = $true
+    }
+
+    if (-not $needsPush) {
+        return [PSCustomObject]@{ Ok = $true; Status = "no-push-needed"; Detail = $branchLine }
+    }
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $pushRes = Invoke-GitCapture -GitArgs @("push") -AllowFail
+        if ($pushRes.ExitCode -eq 0) {
+            return [PSCustomObject]@{ Ok = $true; Status = "push-succeeded"; Detail = (@($pushRes.Output) -join "`n") }
+        }
+
+        $pushText = (@($pushRes.Output) -join "`n")
+        if ($pushText -match 'no upstream branch' -or $pushText -match '--set-upstream' -or $pushText -match 'set the remote as upstream') {
+            $upstreamRes = Invoke-GitCapture -GitArgs @("push", "-u", "origin", "HEAD") -AllowFail
+            if ($upstreamRes.ExitCode -eq 0) {
+                return [PSCustomObject]@{ Ok = $true; Status = "push-upstream-succeeded"; Detail = (@($upstreamRes.Output) -join "`n") }
+            }
+            $pushText = (@($upstreamRes.Output) -join "`n")
+        }
+
+        $authFailed = (
+            $pushText -match 'Authentication failed' -or
+            $pushText -match 'Permission denied' -or
+            $pushText -match 'could not read Username' -or
+            $pushText -match 'Access denied'
+        )
+        if ($authFailed) {
+            return [PSCustomObject]@{ Ok = $false; Status = "push-auth-failed"; Detail = $pushText }
+        }
+
+        $pushRejected = (
+            $pushText -match 'failed to push some refs' -or
+            $pushText -match 'non-fast-forward' -or
+            $pushText -match '\[rejected\]' -or
+            $pushText -match 'fetch first'
+        )
+        if ($pushRejected) {
+            $pullRes = Invoke-GitCapture -GitArgs @("pull", "--rebase", "--autostash") -AllowFail
+            if ($pullRes.ExitCode -ne 0) {
+                $null = Invoke-GitCapture -GitArgs @("rebase", "--abort") -AllowFail
+            }
+        }
+
+        Start-Sleep -Seconds 2
+    }
+
+    $detail = "Could not push after retries."
+    if (-not [string]::IsNullOrWhiteSpace($statusDetail)) {
+        $detail += "`nStatus probe detail:`n" + $statusDetail
+    }
+
+    return [PSCustomObject]@{ Ok = $false; Status = "push-max-attempts-exceeded"; Detail = $detail }
+}
+
+function Get-CommitDeltaSinceStart {
+    if (-not $script:StartHeads -or $script:StartHeads.Count -eq 0) { return 0 }
+
+    $total = 0
+    foreach ($entry in $script:StartHeads.GetEnumerator()) {
+        $repoPath = [string]$entry.Key
+        $startSha = [string]$entry.Value
+        if ([string]::IsNullOrWhiteSpace($startSha)) { continue }
+
+        $countRes = Invoke-GitCapture -GitArgs @("-C", $repoPath, "rev-list", "--count", "$startSha..HEAD") -AllowFail
+        if ($countRes.ExitCode -ne 0) { continue }
+
+        $value = Get-FirstIntFromOutput -Output $countRes.Output
+        if ($null -ne $value) {
+            $total += [int]$value
+        }
+    }
+
+    return $total
+}
+
+function Get-PhaseCounts {
+    param(
+        [string]$RoadmapFile,
+        [bool]$IsRunning,
+        [string]$PhaseText
+    )
+
+    $completed = @(Get-CompletedPhases -RoadmapFile $RoadmapFile).Count
+    $pending = @(Get-PendingPhases -RoadmapFile $RoadmapFile).Count
+
+    $inProgress = 0
+    if ($IsRunning) {
+        if ($pending -gt 0) {
+            $inProgress = 1
+        } elseif (-not [string]::IsNullOrWhiteSpace($PhaseText) -and $PhaseText -ne "-") {
+            $inProgress = 1
+        }
+    }
+
+    return [PSCustomObject]@{
+        Completed = $completed
+        InProgress = $inProgress
+        Pending = $pending
+    }
+}
+
+function Write-ProgressUpdate {
+    param(
+        [string]$StatusPath,
+        [int]$Cycle,
+        [string]$Stage,
+        [string]$Doing,
+        [string]$Phase,
+        [bool]$IsRunning,
+        [string]$LogName
+    )
+
+    $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+    $healthText = if ($metric -and $null -ne $metric.Health) { "{0}/100" -f $metric.Health } else { "unknown" }
+    $driftText = if ($metric -and $null -ne $metric.Drift) { [string]$metric.Drift } else { "unknown" }
+    $unmappedText = if ($metric -and $null -ne $metric.Unmapped) { [string]$metric.Unmapped } else { "unknown" }
+
+    $phaseCounts = Get-PhaseCounts -RoadmapFile $script:ResolvedRoadmapPath -IsRunning $IsRunning -PhaseText $Phase
+    $commitsDone = Get-CommitDeltaSinceStart
+
+    $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $line = '[{0}] cycle={1} stage={2} doing="{3}" phase={4} phases(completed={5},in_progress={6},pending={7}) target(h=100,d=0,u=0) current(h={8},d={9},u={10}) commits={11} log={12}' -f `
+        $ts, $Cycle, $Stage, $Doing, $Phase, $phaseCounts.Completed, $phaseCounts.InProgress, $phaseCounts.Pending, $healthText, $driftText, $unmappedText, $commitsDone, $LogName
+
+    Add-Content -Path $StatusPath -Value $line
+    Write-Host $line -ForegroundColor Green
+}
+
+function Invoke-GlobalSkillMonitored {
+    param(
+        [string]$Prompt,
+        [string]$LogFile,
+        [string]$Stage,
+        [int]$Cycle,
+        [string]$Phase,
+        [string]$Doing
+    )
+
+    Write-Host "" 
+    Write-Host ("Headless command: codex exec ... ({0})" -f $Stage) -ForegroundColor DarkGray
+
+    if ($DryRun) { return 0 }
+
+    $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+    $promptFile = Join-Path $script:ResolvedLogDir ("{0}-cycle-{1:D3}-{2}.prompt.txt" -f ($Stage -replace '[^a-zA-Z0-9_-]', '_'), $Cycle, $stamp)
+    $errFile = $LogFile + ".stderr"
+
+    Set-Content -Path $promptFile -Value $Prompt -NoNewline -Encoding UTF8
+
+    $cmd = "type `"{0}`" | `"{1}`" exec - --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd `"{2}`"" -f $promptFile, $script:CodexExe, $script:ResolvedProjectRoot
+    $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardOutput $LogFile -RedirectStandardError $errFile
+
+    $lastHeartbeat = (Get-Date).AddSeconds(-1 * [math]::Max(1, $HeartbeatSeconds))
+
+    while (-not $proc.HasExited) {
+        if (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatSeconds) {
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-running" -f $Stage) -Doing $Doing -Phase $Phase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
+            $lastHeartbeat = Get-Date
+        }
+
+        Start-Sleep -Seconds 2
+    }
+
+    if (Test-Path $errFile) {
+        Get-Content -Path $errFile | Add-Content -Path $LogFile
+    }
+
+    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-exit-{1}" -f $Stage, $proc.ExitCode) -Doing $Doing -Phase $Phase -IsRunning $false -LogName (Split-Path -Leaf $LogFile)
+
+    return $proc.ExitCode
+}
+
+$script:ResolvedProjectRoot = (Resolve-Path -Path $ProjectRoot).Path
+$script:ResolvedRoadmapPath = Resolve-PathFromRoot -Root $script:ResolvedProjectRoot -PathValue $RoadmapPath
+$script:ResolvedStatePath = Resolve-PathFromRoot -Root $script:ResolvedProjectRoot -PathValue $StatePath
+
+if ($StrictRoot) {
+    $conflicts = New-Object System.Collections.Generic.List[string]
+
+    if (-not (Test-Path $script:ResolvedRoadmapPath)) { $conflicts.Add($script:ResolvedRoadmapPath) | Out-Null }
+    if (-not (Test-Path $script:ResolvedStatePath)) { $conflicts.Add($script:ResolvedStatePath) | Out-Null }
+
+    $roadmapCandidates = Get-ChildItem -Path $script:ResolvedProjectRoot -Recurse -File -Filter "ROADMAP.md" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '[\\/]\.planning[\\/]ROADMAP\.md$' }
+
+    foreach ($cand in $roadmapCandidates) {
+        $full = (Resolve-Path $cand.FullName).Path
+        if ($full -ne $script:ResolvedRoadmapPath) { $conflicts.Add($full) | Out-Null }
+    }
+
+    $stateCandidates = Get-ChildItem -Path $script:ResolvedProjectRoot -Recurse -File -Filter "STATE.md" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '[\\/]\.planning[\\/]STATE\.md$' }
+
+    foreach ($cand in $stateCandidates) {
+        $full = (Resolve-Path $cand.FullName).Path
+        if ($full -ne $script:ResolvedStatePath) { $conflicts.Add($full) | Out-Null }
+    }
+
+    if ($conflicts.Count -gt 0) {
+        Write-Host "STRICT-ROOT FAIL: root or roadmap/state ambiguity detected." -ForegroundColor Red
+        Write-Host "Conflicting paths:" -ForegroundColor Red
+        foreach ($p in ($conflicts | Sort-Object -Unique)) {
+            Write-Host (" - {0}" -f $p) -ForegroundColor Red
+        }
+        exit 12
+    }
+}
+
+Set-Location $script:ResolvedProjectRoot
+
+$script:CodexExe = Resolve-CodexCommand
+if (-not $script:CodexExe) {
+    throw "codex executable not found. Install/login Codex CLI first."
+}
+Ensure-CodexOnPath -CodexExePath $script:CodexExe
+
+$script:GitExe = Resolve-GitCommand
+if (-not $script:GitExe) {
+    throw "git executable not found. Install Git or add it to PATH."
+}
+Ensure-GitOnPath -GitExePath $script:GitExe
+$script:GitRepoRoot = $script:ResolvedProjectRoot
+
+$script:ResolvedLogDir = if ([System.IO.Path]::IsPathRooted($LogDir)) { $LogDir } else { Join-Path $script:ResolvedProjectRoot $LogDir }
+if (-not (Test-Path $script:ResolvedLogDir) -and -not $DryRun) {
+    New-Item -ItemType Directory -Path $script:ResolvedLogDir -Force | Out-Null
+}
+
+$script:ResolvedStatusPath = if ([System.IO.Path]::IsPathRooted($StatusFile)) { $StatusFile } else { Join-Path $script:ResolvedProjectRoot $StatusFile }
+$statusDir = Split-Path -Parent $script:ResolvedStatusPath
+if (-not (Test-Path $statusDir) -and -not $DryRun) {
+    New-Item -ItemType Directory -Path $statusDir -Force | Out-Null
+}
+
+$script:ResolvedSummaryPaths = @()
+foreach ($sp in $SummaryPaths) {
+    if ([System.IO.Path]::IsPathRooted($sp)) {
+        $script:ResolvedSummaryPaths += $sp
+    } else {
+        $script:ResolvedSummaryPaths += (Join-Path $script:ResolvedProjectRoot $sp)
+    }
+}
+
+Initialize-CommitBaselines
+
+Add-Content -Path $script:ResolvedStatusPath -Value ("[{0}] runner-start repo={1} roadmap={2} state={3} strict_root={4} max_outer={5} max_cycles={6} start_head={7} tracked_repos={8}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $script:ResolvedProjectRoot, $script:ResolvedRoadmapPath, $script:ResolvedStatePath, $StrictRoot, $MaxOuterLoops, $AutoDevMaxCycles, $script:StartHead, $script:TrackedRepos.Count)
+
+Write-Host ""
+Write-Host "Global GSD E2E Runner" -ForegroundColor Green
+Write-Host "=====================" -ForegroundColor Green
+Write-Host ("Repo root:             {0}" -f $script:ResolvedProjectRoot) -ForegroundColor White
+Write-Host ("Roadmap path:          {0}" -f $script:ResolvedRoadmapPath) -ForegroundColor White
+Write-Host ("State path:            {0}" -f $script:ResolvedStatePath) -ForegroundColor White
+Write-Host ("Strict root:           {0}" -f $StrictRoot) -ForegroundColor White
+Write-Host ("Max outer loops:       {0}" -f $MaxOuterLoops) -ForegroundColor White
+Write-Host ("Auto-dev max cycles:   {0}" -f $AutoDevMaxCycles) -ForegroundColor White
+Write-Host ("Heartbeat (seconds):   {0}" -f $HeartbeatSeconds) -ForegroundColor White
+Write-Host ("Status log:            {0}" -f $script:ResolvedStatusPath) -ForegroundColor DarkGray
+Write-Host ("Target metrics:        Health=100, Drift=0, Unmapped=0") -ForegroundColor White
+
+$startTime = Get-Date
+$lastAutoDevLog = ""
+$lastConfirmLog = ""
+$stopReason = "max_outer_loops_reached"
+$finalMetric = $null
+
+$autoDevCommand = '$gsd-auto-dev --write --max-cycles ' + $AutoDevMaxCycles + ' --project-root "' + $script:ResolvedProjectRoot + '" --roadmap-path "' + $RoadmapPath + '" --state-path "' + $StatePath + '" --strict-root'
+
+$autoDevPromptTemplate = @'
+{0}
+
+Execution contract:
+- Treat `$gsd-*` entries as Codex skill invocations, not shell commands.
+- Use only global skills from `C:\Users\rjain\.codex\skills` for all `/gsd` commands.
+- Assume YES for all prompts/approvals.
+- In each cycle, process pending phases by stage:
+  1) parallel multi-agent research for all pending phases needing research,
+  2) parallel multi-agent planning for all pending phases needing plans,
+  3) sequential execution of phases in deterministic roadmap order.
+- During `$gsd-sdlc-review`, run detailed review with parallel multi-agent fan-out for layers/gates, then aggregate deterministically.
+- Strict root must remain enforced with:
+  - project root `{1}`
+  - roadmap path `{2}`
+  - state path `{3}`
+- If root/roadmap is ambiguous, fail fast and print conflicting paths.
+- If commit/push fails, auto-fix git issues and retry until push succeeds before continuing.
+- Mandatory progress update every 1 minute including:
+  - what script is currently doing
+  - current phase counts (completed, in progress, pending)
+  - target metrics (health=100, drift=0, unmapped=0)
+  - current metrics (health, drift, unmapped)
+  - git commits completed so far in this run
+'@
+$autoDevPrompt = [string]::Format($autoDevPromptTemplate, $autoDevCommand, $script:ResolvedProjectRoot, $RoadmapPath, $StatePath)
+
+$confirmPromptTemplate = @'
+$gsd-sdlc-review
+
+Confirmation contract:
+- No code changes between clean-candidate pass and this confirmation pass.
+- Report health, deterministic drift total, and unmapped findings.
+- Include current commit hash and whether results remain clean.
+'@
+$confirmPrompt = $confirmPromptTemplate
+
+for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
+    $pendingBefore = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+    $phaseText = if ($pendingBefore.Count -gt 0) { [string]$pendingBefore[0] } else { "-" }
+
+    $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+    $autoDevLog = Join-Path $script:ResolvedLogDir ("auto-dev-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
+    $lastAutoDevLog = $autoDevLog
+
+    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "cycle-start" -Doing ("starting cycle {0}" -f $cycle) -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
+
+    $autoDevExit = Invoke-GlobalSkillMonitored -Prompt $autoDevPrompt -LogFile $autoDevLog -Stage "auto-dev" -Cycle $cycle -Phase $phaseText -Doing ("running {0}" -f $autoDevCommand)
+
+    $pushAfterAutoDev = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "auto-dev"
+    if (-not $pushAfterAutoDev.Ok) {
+        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterAutoDev.Status) -Doing "stopping after push failure" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
+        $stopReason = $pushAfterAutoDev.Status
+        break
+    }
+
+    $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+    $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+
+    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Doing "evaluating clean-candidate gates" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
+
+    $isCleanCandidate = (
+        $metric -and $metric.Complete -and
+        $metric.Health -eq 100 -and
+        $metric.Drift -eq 0 -and
+        $metric.Unmapped -eq 0 -and
+        $pendingAfter.Count -eq 0
+    )
+
+    if (-not $isCleanCandidate) { continue }
+
+    $codeBefore = Get-CodeFingerprint
+
+    $confirmLog = Join-Path $script:ResolvedLogDir ("final-confirm-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
+    $lastConfirmLog = $confirmLog
+
+    $confirmExit = Invoke-GlobalSkillMonitored -Prompt $confirmPrompt -LogFile $confirmLog -Stage "final-confirm" -Cycle $cycle -Phase "-" -Doing "running final clean confirmation review"
+
+    $pushAfterConfirm = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "final-confirm"
+    if (-not $pushAfterConfirm.Ok) {
+        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterConfirm.Status) -Doing "stopping after confirmation push failure" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
+        $stopReason = $pushAfterConfirm.Status
+        break
+    }
+
+    $confirmMetric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+    $pendingConfirm = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+    $codeAfter = Get-CodeFingerprint
+    $noCodeChanges = Test-CodeFingerprintEqual -Left $codeBefore -Right $codeAfter
+
+    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -Doing ("final confirmation analyzed; no_code_changes={0}" -f $noCodeChanges) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
+
+    $confirmClean = (
+        $confirmMetric -and $confirmMetric.Complete -and
+        $confirmMetric.Health -eq 100 -and
+        $confirmMetric.Drift -eq 0 -and
+        $confirmMetric.Unmapped -eq 0 -and
+        $pendingConfirm.Count -eq 0 -and
+        $noCodeChanges
+    )
+
+    if ($confirmClean) {
+        $finalMetric = $confirmMetric
+        $stopReason = "clean-confirmed"
+        break
+    }
+}
+
+$elapsed = (Get-Date) - $startTime
+$headShort = ""
+$headLong = ""
+$branchState = ""
+
+$headRes = Invoke-GitCapture -GitArgs @("rev-parse", "HEAD") -AllowFail
+if ($headRes.ExitCode -eq 0) {
+    $headLong = Get-FirstShaFromOutput -Output $headRes.Output -Length 40
+    if (-not [string]::IsNullOrWhiteSpace($headLong)) {
+        $shortLen = [Math]::Min(7, $headLong.Length)
+        $headShort = $headLong.Substring(0, $shortLen)
+    }
+}
+
+$statusRes = Invoke-GitCapture -GitArgs @("status", "-sb") -AllowFail
+if ($statusRes.ExitCode -eq 0) {
+    foreach ($row in @($statusRes.Output)) {
+        $line = [string]$row
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+            $branchState = $line
+            break
+        }
+    }
+}
+
+$commitsAdvanced = Get-CommitDeltaSinceStart
+$pushStatus = if ([string]::IsNullOrWhiteSpace($branchState)) {
+    "unknown"
+} elseif ($branchState -match '\[ahead ') {
+    "local-ahead-not-pushed"
+} else {
+    "up-to-date-or-diverged"
+}
+
+$finalHealthText = "unknown"
+$finalDriftText = "unknown"
+$finalUnmappedText = "unknown"
+
+if ($finalMetric) {
+    $finalHealthText = "{0}/100" -f $finalMetric.Health
+    $finalDriftText = [string]$finalMetric.Drift
+    $finalUnmappedText = [string]$finalMetric.Unmapped
+} else {
+    $fallbackMetric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+    if ($fallbackMetric) {
+        if ($null -ne $fallbackMetric.Health) { $finalHealthText = "{0}/100" -f $fallbackMetric.Health }
+        if ($null -ne $fallbackMetric.Drift) { $finalDriftText = [string]$fallbackMetric.Drift }
+        if ($null -ne $fallbackMetric.Unmapped) { $finalUnmappedText = [string]$fallbackMetric.Unmapped }
+    }
+}
+
+$finalSummary = @(
+    "FINAL",
+    ("stop_reason={0}" -f $stopReason),
+    ("health={0}" -f $finalHealthText),
+    ("drift={0}" -f $finalDriftText),
+    ("unmapped={0}" -f $finalUnmappedText),
+    ("commits={0}" -f $commitsAdvanced),
+    ("head={0}" -f $headLong),
+    ("push_status={0}" -f $pushStatus),
+    ("last_auto_dev_log={0}" -f $lastAutoDevLog),
+    ("last_confirm_log={0}" -f $lastConfirmLog),
+    ("status_log={0}" -f $script:ResolvedStatusPath),
+    ("executive_summary_candidates={0}" -f ($script:ResolvedSummaryPaths -join ';'))
+) -join " "
+Add-Content -Path $script:ResolvedStatusPath -Value ("[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $finalSummary)
+
+Write-Host ""
+if ($finalMetric -and $stopReason -eq "clean-confirmed") {
+    Write-Host "SUCCESS: clean state confirmed." -ForegroundColor Green
+} else {
+    Write-Host "STOPPED: target not confirmed clean." -ForegroundColor Red
+}
+
+$elapsedText = "{0:00}:{1:00}:{2:00}" -f [int]$elapsed.TotalHours, $elapsed.Minutes, $elapsed.Seconds
+Write-Host ("Stop reason:          {0}" -f $stopReason) -ForegroundColor White
+Write-Host ("Elapsed:              {0}" -f $elapsedText) -ForegroundColor White
+Write-Host ("Final health:         {0}" -f $finalHealthText) -ForegroundColor White
+Write-Host ("Final drift:          {0}" -f $finalDriftText) -ForegroundColor White
+Write-Host ("Final unmapped:       {0}" -f $finalUnmappedText) -ForegroundColor White
+Write-Host ("Commits during run:   {0}" -f $commitsAdvanced) -ForegroundColor White
+Write-Host ("Commit hash:          {0}" -f $headLong) -ForegroundColor White
+Write-Host ("Push status:          {0}" -f $pushStatus) -ForegroundColor White
+Write-Host ("Last auto-dev log:    {0}" -f $lastAutoDevLog) -ForegroundColor DarkGray
+Write-Host ("Last confirm log:     {0}" -f $lastConfirmLog) -ForegroundColor DarkGray
+Write-Host ("Status log:           {0}" -f $script:ResolvedStatusPath) -ForegroundColor DarkGray
+Write-Host ("Key artifacts:        {0}" -f ($script:ResolvedSummaryPaths -join '; ')) -ForegroundColor DarkGray
+
+if ($finalMetric -and $stopReason -eq "clean-confirmed") {
+    exit 0
+}
+
+exit 2

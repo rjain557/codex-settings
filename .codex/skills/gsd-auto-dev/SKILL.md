@@ -1,6 +1,6 @@
 ---
 name: gsd-auto-dev
-description: Codex-native autonomous SDLC remediation loop. In write mode, process pending phases, run deterministic SDLC review each cycle, then require final line-level code-completeness confirmation via gsd-sdlc-finalreview before success.
+description: Codex-native autonomous SDLC remediation loop. In write mode, process pending phases with parallel research/planning fan-out, sequential phase execution, deterministic SDLC review each cycle, then require final line-level code-completeness confirmation via gsd-sdlc-finalreview before success.
 ---
 
 # Purpose
@@ -13,6 +13,7 @@ Use for requests like "auto-dev", "run remediation loop", "fix all pending SDLC 
 The text after `$gsd-auto-dev` is parsed as arguments.
 Supported arguments:
 - `--max-cycles <n>`: Maximum remediation cycles (default `20`).
+- `--parallelism <n>`: Max concurrent agents for research/plan/review fan-out (default `4`).
 - `--layer=frontend|backend|database|auth`: Optional review scope forwarded to `$gsd-sdlc-review`.
 - `--phase=<n>`: Optional phase filter. Only process this phase if pending.
 - `--stop-on-failure`: Stop immediately when a phase stage fails.
@@ -38,7 +39,7 @@ Supported arguments:
 3. Cycle loop (`cycle = 1..max_cycles`)
 - Read pending phases from unchecked ROADMAP phase headers: `- [ ] **Phase N:`.
 - If `--phase` is set, intersect pending list with that phase.
-- Sort ascending and process sequentially.
+- Sort ascending once and use the same deterministic order throughout the cycle.
 - Emit progress updates every 1 minute while running long stages.
 - Each progress update must include:
   - current stage/action (what the script is doing right now),
@@ -47,13 +48,24 @@ Supported arguments:
   - current metrics: health/drift/unmapped from latest review summary,
   - number of git commits completed during the run.
 
-4. For each pending phase (sequential)
-- Research gate: if phase directory has no `*RESEARCH.md`, run `$gsd-batch-research <phase>`.
-- Planning gate: if phase directory has no `*-PLAN.md`, run `$gsd-batch-plan <phase>`.
-- Execute gate: run `$gsd-batch-execute <phase>`.
-- If a stage fails:
-  - With `--stop-on-failure`, stop immediately and report failure.
-  - Otherwise, record failure and continue with next pending phase.
+4. Three-stage phase processing per cycle
+- Stage A: Research fan-out (parallel)
+  - Build `researchNeeded` from pending phases missing `*RESEARCH.md`.
+  - Dispatch multiple agents in parallel (bounded by `--parallelism`) running `$gsd-batch-research <phase>`.
+  - Wait for all research agents to finish, collect per-phase results, and surface failures with evidence.
+  - With `--stop-on-failure`, stop cycle immediately on any research failure.
+- Stage B: Planning fan-out (parallel)
+  - Build `planNeeded` from pending phases missing `*-PLAN.md` after Stage A completes.
+  - Dispatch multiple agents in parallel (bounded by `--parallelism`) running `$gsd-batch-plan <phase>`.
+  - Wait for all planning agents to finish, collect per-phase results, and surface failures with evidence.
+  - With `--stop-on-failure`, stop cycle immediately on any planning failure.
+- Stage C: Execution (sequential)
+  - Determine executable phase set in ascending order:
+    - pending phases with required research+plan artifacts present and no unresolved Stage A/B failure for that phase.
+  - Run `$gsd-batch-execute <phase>` sequentially in roadmap order.
+  - If execute fails:
+    - With `--stop-on-failure`, stop immediately.
+    - Otherwise, record failure and continue to next executable phase.
 
 5. Re-review after phase execution
 - Run `$gsd-sdlc-review` (pass `--layer` when provided).
@@ -120,6 +132,10 @@ Supported arguments:
 
 9. Final output
 - Report cycles run, phases processed per cycle, failures, final health, deterministic drift totals, runtime gate totals, finalreview metrics (`coverage_percent`, `unmapped_lines`, `summary_hash`, `commit_sha`), remaining pending phases, stop reason, exact summary paths/values used, and git commits completed during the run.
+- Include per-cycle fan-out telemetry:
+  - `research_dispatched`, `research_failed`,
+  - `plan_dispatched`, `plan_failed`,
+  - `executed_sequential_count`.
 
 # Outputs / artifacts
 Summarize and reference:
@@ -141,6 +157,7 @@ Summarize and reference:
 - Always run `$gsd-sdlc-finalreview` before declaring success.
 - Do not substitute `$gsd-code-review` for `$gsd-sdlc-review` in this skill.
 - Do not skip research/planning gates before execution.
-- Do not process phases in parallel; keep order deterministic.
+- Do not execute phases in parallel; execution remains strictly sequential and deterministic.
+- Parallelism is allowed only for research/planning fan-out and must preserve deterministic phase ordering in result aggregation.
 - Do not claim success unless all clean-state conditions and finalreview confirmation conditions are satisfied.
 - Do not treat missing runtime gate lines, `UNVERIFIED` runtime gates, or runtime gate failures as clean.
