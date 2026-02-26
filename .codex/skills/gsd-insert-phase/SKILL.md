@@ -27,10 +27,10 @@ Arguments: <parsed-arguments> (format: <after-phase-number> <description>)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/insert-phase.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/insert-phase.md
 Then execute this process:
 ```text
-Execute the insert-phase workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/insert-phase.md end-to-end.
+Execute the insert-phase workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/insert-phase.md end-to-end.
 Preserve all validation gates (argument parsing, phase verification, decimal calculation, roadmap updates).
 ```
 
@@ -42,6 +42,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\insert-phase.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\insert-phase.md

@@ -32,10 +32,10 @@ Glob: .planning/v*-MILESTONE-AUDIT.md (use most recent)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/plan-milestone-gaps.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/plan-milestone-gaps.md
 Then execute this process:
 ```text
-Execute the plan-milestone-gaps workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/plan-milestone-gaps.md end-to-end.
+Execute the plan-milestone-gaps workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/plan-milestone-gaps.md end-to-end.
 Preserve all workflow gates (audit loading, prioritization, phase grouping, user confirmation, roadmap updates).
 ```
 
@@ -47,6 +47,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\plan-milestone-gaps.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\plan-milestone-gaps.md

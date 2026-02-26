@@ -1,17 +1,17 @@
 ---
 name: gsd-list-phase-assumptions
-description: Surface Codex's assumptions about a phase approach before planning Use when the user asks for 'gsd:list-phase-assumptions', 'gsd-list-phase-assumptions', or equivalent trigger phrases.
+description: Surface Claude's assumptions about a phase approach before planning Use when the user asks for 'gsd:list-phase-assumptions', 'gsd-list-phase-assumptions', or equivalent trigger phrases.
 ---
 
 # Purpose
-Analyze a phase and present Codex's assumptions about technical approach, implementation order, scope boundaries, risk areas, and dependencies.
+Analyze a phase and present Claude's assumptions about technical approach, implementation order, scope boundaries, risk areas, and dependencies.
 
-Purpose: Help users see what Codex thinks BEFORE planning begins - enabling course correction early when assumptions are wrong.
+Purpose: Help users see what Claude thinks BEFORE planning begins - enabling course correction early when assumptions are wrong.
 Output: Conversational output only (no file creation) - ends with "What do you think?" prompt
 
 # When to use
 Use when the user requests the original gsd:list-phase-assumptions flow (for example: $gsd-list-phase-assumptions).
-Also use on natural-language requests that match this behavior: Surface Codex's assumptions about a phase approach before planning
+Also use on natural-language requests that match this behavior: Surface Claude's assumptions about a phase approach before planning
 
 # Inputs
 The user's text after invoking $gsd-list-phase-assumptions is the arguments. Parse it into required fields; if any required field is missing, ask targeted follow-up questions.
@@ -29,7 +29,7 @@ Phase number: <parsed-arguments> (required)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/list-phase-assumptions.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/list-phase-assumptions.md
 Then execute this process:
 ```text
 1. Validate phase number argument (error if missing or invalid)
@@ -50,6 +50,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\list-phase-assumptions.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\list-phase-assumptions.md

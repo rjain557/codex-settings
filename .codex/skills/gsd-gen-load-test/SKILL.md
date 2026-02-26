@@ -30,10 +30,10 @@ Target: <parsed-arguments> (optional flags)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/gen-load-test.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/gen-load-test.md
 Then execute this process:
 ```text
-Execute the gen-load-test workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-load-test.md end-to-end.
+Execute the gen-load-test workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-load-test.md end-to-end.
 Auto-discover endpoints from OpenAPI spec. Ask tool and CI platform questions before generating. Generate scenarios with realistic load profiles and performance thresholds.
 ```
 
@@ -45,6 +45,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\gen-load-test.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\gen-load-test.md

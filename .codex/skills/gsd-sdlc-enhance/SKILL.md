@@ -27,7 +27,7 @@ Flags: <parsed-arguments>
 # Workflow
 Load and follow these referenced artifacts first:
 - @docs/sdlc/phase.f.multiagent/phase-f-orchestrate.md
-- @docs/sdlc/phase.f.multiagent/Codex.md
+- @docs/sdlc/phase.f.multiagent/CLAUDE.md
 - @.planning/STATE.md
 Then execute this process:
 ```text
@@ -82,6 +82,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\sdlc-enhance.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\sdlc-enhance.md

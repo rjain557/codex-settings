@@ -31,10 +31,10 @@ Target: <parsed-arguments> (optional: typescript, csharp, swift, kotlin, or blan
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/gen-api-client.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/gen-api-client.md
 Then execute this process:
 ```text
-Execute the gen-api-client workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-api-client.md end-to-end.
+Execute the gen-api-client workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-api-client.md end-to-end.
 Parse OpenAPI spec, ask target platforms and features, generate typed clients with auth and tenant interceptors.
 ```
 
@@ -46,6 +46,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\gen-api-client.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\gen-api-client.md

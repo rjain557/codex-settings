@@ -8,7 +8,7 @@ Generate a cross-browser extension that runs on Chrome, Edge, and Safari. Uses M
 
 The user chooses the extension type:
 - **Popup**: Toolbar icon with popup panel (like 1Password)
-- **Side panel**: Full-height sidebar alongside pages (like Codex sidebar)
+- **Side panel**: Full-height sidebar alongside pages (like Claude sidebar)
 - **Content script only**: Injects into pages with no visible UI (like Dark Reader)
 - **Full extension**: All components (popup, side panel, content scripts, options)
 
@@ -31,10 +31,10 @@ Target: <parsed-arguments> (optional: chrome, edge, safari, or blank for all)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/gen-extension.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/gen-extension.md
 Then execute this process:
 ```text
-Execute the gen-extension workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-extension.md end-to-end.
+Execute the gen-extension workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-extension.md end-to-end.
 Ask the extension type and UI framework questions before generating. Generate shared core + browser-specific manifests and build targets.
 ```
 
@@ -46,6 +46,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\gen-extension.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\gen-extension.md

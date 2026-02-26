@@ -22,10 +22,10 @@ Check for local patches directory:
 
 ```bash
 # Global install
-PATCHES_DIR="${HOME}/.codex/gsd-local-patches"
+PATCHES_DIR="${HOME}/.claude/gsd-local-patches"
 # Local install fallback
 if [ ! -d "$PATCHES_DIR" ]; then
-  PATCHES_DIR="./.codex/gsd-local-patches"
+  PATCHES_DIR="./.claude/gsd-local-patches"
 fi
 ```
 
@@ -116,6 +116,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\reapply-patches.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\reapply-patches.md

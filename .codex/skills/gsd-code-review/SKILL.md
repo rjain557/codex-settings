@@ -37,9 +37,9 @@ Options: <parsed-arguments>
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/code-review.md
-- @C:/Users/rjain/.codex/agents/gsd-code-reviewer.md
-- @C:/Users/rjain/.codex/get-shit-done/references/ui-brand.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/code-review.md
+- @C:/Users/rjain/.claude/agents/gsd-code-reviewer.md
+- @C:/Users/rjain/.claude/get-shit-done/references/ui-brand.md
 Then execute this process:
 ```text
 ## 1. Parse Options
@@ -52,10 +52,10 @@ Determine review scope from <parsed-arguments>:
 ## 2. Load Context
 
 Read the workflow file for detailed execution steps:
-@C:/Users/rjain/.codex/get-shit-done/workflows/code-review.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/code-review.md
 
 Read the agent definition for orchestration role and finding format:
-@C:/Users/rjain/.codex/agents/gsd-code-reviewer.md
+@C:/Users/rjain/.claude/agents/gsd-code-reviewer.md
 
 If .planning/STATE.md exists, read for project context (current phase, recent work).
 
@@ -148,6 +148,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\code-review.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\code-review.md
