@@ -33,5 +33,6 @@ Click the link or paste it into your browser to join.
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\join-discord.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\join-discord.md
+

@@ -9,7 +9,7 @@ Generate a cross-platform remote agent that runs as a background service on Mac,
 The user chooses the UI mode:
 - **Headless**: No UI, CLI-managed (best for servers)
 - **System tray with menu**: Right-click context menu (like Docker Desktop)
-- **System tray with popup**: Tray icon with popup window (like Claude Desktop)
+- **System tray with popup**: Tray icon with popup window (like Codex Desktop)
 
 Default: generates for all three platforms. Pass a platform name to target one.
 
@@ -30,10 +30,10 @@ Target: <parsed-arguments> (optional: mac, linux, windows, or blank for all)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.claude/get-shit-done/workflows/gen-agent.md
+- @C:/Users/rjain/.codex/get-shit-done/workflows/gen-agent.md
 Then execute this process:
 ```text
-Execute the gen-agent workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-agent.md end-to-end.
+Execute the gen-agent workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-agent.md end-to-end.
 Ask the UI mode question before generating. Generate shared core + platform-specific wrappers.
 ```
 
@@ -45,5 +45,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\gen-agent.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\gen-agent.md
+

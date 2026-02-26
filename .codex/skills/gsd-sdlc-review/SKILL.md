@@ -1,181 +1,90 @@
 ---
 name: gsd-sdlc-review
-description: Codex-native deterministic SDLC review. Always compare latest Figma and latest spec artifacts against code, detect contract drift, and map all findings to remediation phases.
+description: Codex-only SDLC code review. Generate review reports with a parseable health score, prioritized findings, and required remediation phases when findings exist.
 ---
 
 # Purpose
-Run deterministic, evidence-based SDLC review that enforces design/spec/code parity and guarantees every finding has a remediation phase path to 100/100.
+Run SDLC review and produce remediation-grade reports used by auto-dev loops.
 
 # When to use
-Use when asked for `$gsd-sdlc-review`, or whenever a remediation loop requires current health and drift findings.
+Use when asked for `$gsd-sdlc-review`, or when a remediation loop needs a fresh health score and findings.
 
 # Inputs
-Optional arguments:
-- `--layer=frontend|backend|database|auth`
-- `--skip-build` (allowed, but deterministic parity checks are still mandatory)
+Optional argument:
+- `--layer=frontend|backend|database|auth|agent`
+
+# Model policy
+- Use Codex `extra-high` reasoning when available.
+- If `extra-high` is unsupported for the account/workspace, automatically use the highest supported Codex model/reasoning level and continue.
 
 # Workflow
-1. Mandatory milestone rotation before review
-- Close previous milestone and open the next milestone before review:
-  - run `gsd:complete-milestone` non-interactively (assume yes)
-  - run `gsd:new-milestone` non-interactively (assume yes)
-- Record previous milestone id, new milestone id, and branch in review artifacts.
-
-2. Resolve canonical project root deterministically
-- Evaluate candidate roots: `.` and `./tech-web-chatai.2`.
-- Score each root by required asset groups:
-  - `.planning/ROADMAP.md`
-  - `.planning/STATE.md`
-  - `docs/spec/`
-  - `docs/review/`
-  - `design/figma/` (or versioned equivalents)
-  - source trees (`src/Client`, `src/Server`, `db`)
-- Select highest-scoring root. If tie, choose lexicographically stable path.
-- Record root and candidate scores in artifacts.
-
-3. Run mandatory implementation evidence census (new hard gate)
-- Count files by executable/schematic types in selected root:
-  - `*.cs`, `*.csproj`, `*.sln`
-  - `*.ts`, `*.tsx`, `*.js`
-  - `*.sql`
-- Record exact counts in executive/full report.
-- If all core implementation counts are zero, emit `ROOT-BLOCKER-NO-IMPLEMENTATION` and cap health at <=20.
-
-4. Resolve latest design/spec sources (mandatory every run)
-- Identify latest **Figma deliverable** by version folder and timestamp.
-- Exclude prompt/templates from being treated as design deliverables (e.g., files under `docs/**/templates/**`).
-- Identify latest canonical spec artifacts from `docs/spec/`:
-  - `ui-contract.md` (or canonical equivalent)
-  - `openapi.yaml`/`openapi.json`
-  - `apitospmap.csv`/`apitospmap.md` (or canonical API-SP map)
-  - `db-plan.md`
-  - `remote-agent.md`
-  - `openclaw-remote-agent-spec.md`
-- Record exact file paths + timestamps for all selected sources.
-- Missing required design/spec artifacts are BLOCKER findings.
-
-5. Run deterministic parity gates (mandatory)
-- Design route parity:
-  - Compare latest Figma routes/screens against router definitions and screen imports.
-  - Compute `DESIGN_ROUTE_MISSING`, `DESIGN_SCREEN_MISSING`.
-- OpenAPI controller coverage:
-  - Compare controller/action surface to `openapi`.
-  - Explicitly include `CouncilController` and `AgentsController` when present.
+1. Determine scope from `--layer`; default is full-project review.
+2. Resolve canonical app root (mandatory, deterministic):
+- Evaluate candidate roots: `.` then `tech-web-chatai.2`.
+- Score each candidate by presence of: `src/Server/Technijian.Api`, `src/Client/technijian-spa`, `db`, `design/figma`, `docs/spec`.
+- Select the highest-score root; tie-break on newest `docs/spec` modification timestamp.
+- Record both selected and rejected roots in review artifacts.
+- If both roots contain `docs/review/EXECUTIVE-SUMMARY.md` and parseable health values differ, create HIGH finding `REVIEW-H01` (conflicting review roots).
+3. Resolve latest design/spec sources under selected app root:
+- Discover Figma folders matching `design/figma/vXX` (or `design\\figma\\vXX`) and use largest numeric `XX`.
+- Resolve spec source from `<appRoot>/docs/spec`; if versioned subfolders `vXX` exist, use highest `XX`, else use directory root.
+- Record selected paths plus last-modified timestamps in review artifacts.
+4. Read project context:
+- `.planning/STATE.md` (if present)
+- `.planning/ROADMAP.md` (if present)
+- `docs/sdlc/phase.g.codedebugger/code-debugger.md` (if present)
+5. Run mandatory deterministic parity checks before scoring:
+- Web/Figma route parity:
+  - Compare routes from `design/figma/vXX/src/_analysis/01-screen-inventory.md`, `04-navigation-routing.md`, and `src/BACKEND_INTEGRATION_GUIDE.md` (when present) against `src/Client/technijian-spa/src/router.tsx`.
+  - Any missing primary/admin route in code is HIGH.
 - Remote-agent contract parity:
-  - Compare endpoint sets across `openclaw-remote-agent-spec.md`, `remote-agent.md`, `openapi`, and `AgentsController`.
-  - Compute `OPENCLAW_ENDPOINT_GAP`.
-- API-SP and backend SP parity:
-  - Compare API-SP map operations to controller methods and SQL SP definitions in `db/**/*.sql`.
-  - Compare backend `usp_*` references to SQL procedure existence.
-  - Compute `BACKEND_USP_UNRESOLVED`.
-- DB-plan parity:
-  - Compare planned table/procedure inventory in `db-plan.md` to SQL artifacts.
-  - Compute `DBPLAN_TABLE_DRIFT`.
-- Deterministic parity command:
-  - Run `scripts/sdlc/deterministic-parity.ps1` if present.
-  - If missing, emit `SPEC-BLOCKER-DETERMINISTIC-GATE-MISSING`.
-  - If present but unrunnable, emit `SPEC-BLOCKER-DETERMINISTIC-GATE`.
-
-6. Run stale-report contradiction checks (new hard gate)
-- Scan existing report artifacts (`docs/**/validation*.md`, `docs/**/report*.md`, JSON validation outputs).
-- For each concrete "EXISTS/Complete" claim with a file path, verify path existence now.
-- Emit `EVIDENCE-HIGH-STALEREPORT` for mismatches with path-level evidence.
-- Never inherit health from historical reports.
-
-7. Normalize deterministic totals (required)
-- Output one parseable line:
-  - `Deterministic Drift Totals: DESIGN_ROUTE_MISSING=<n> DESIGN_SCREEN_MISSING=<n> OPENCLAW_ENDPOINT_GAP=<n> DBPLAN_TABLE_DRIFT=<n> BACKEND_USP_UNRESOLVED=<n> TOTAL=<n>`
-- Any non-zero counter must create findings and remediation mapping.
-
-8. Run layer review and quality/build checks
-- Perform severity review (BLOCKER/HIGH/MEDIUM/LOW).
-- Run build/typecheck checks for in-scope layers unless explicitly skipped.
-- Build/typecheck failure is BLOCKER.
-- If no runnable build surfaces exist, emit BLOCKER (`ROOT-BLOCKER-NO-BUILD-SURFACE`).
-
-9. Enforce line-level evidence quality
-- Each finding must include at least one concrete evidence pointer:
-  - file path + line, or
-  - deterministic command output summary with artifact path.
-- Avoid generic claims without evidence.
-
-10. Generate/update review artifacts (required)
-- `docs/review/EXECUTIVE-SUMMARY.md`
-- `docs/review/FULL-REPORT.md`
-- `docs/review/DEVELOPER-HANDOFF.md`
-- `docs/review/PRIORITIZED-TASKS.md`
-- `docs/review/TRACEABILITY-MATRIX.md`
-
-11. Mandatory remediation phase mapping and generation
-- Every finding must map to a remediation phase.
-- Load existing roadmap/state and pending phases first.
-- If missing, bootstrap:
-  - `.planning/PROJECT.md`
-  - `.planning/REQUIREMENTS.md`
-  - `.planning/ROADMAP.md`
-  - `.planning/STATE.md`
-- Create remediation phases immediately for unmapped findings.
-- Final artifact must include `Unmapped findings: 0`.
-
-12. Health scoring and clean-state gate
-- Executive summary must include parseable health line `X/100`.
-- Never report `100/100` unless all are true:
-  - deterministic totals `TOTAL=0`,
-  - all parity counters are `0`,
-  - deterministic parity command exits clean,
-  - implementation census is non-zero for required layers,
-  - build/typecheck pass,
-  - no unmapped findings,
-  - no root ambiguity,
-  - no stale-report contradictions remaining.
-- If implementation census is zero, health must remain <=20.
-
-13. Mandatory post-review publication commit to GitHub
-- After artifacts are generated, build commit message from `docs/review/EXECUTIVE-SUMMARY.md`:
-  - Use a concise one-line executive summary derived from the report.
-  - Preferred source order:
-    1) explicit one-line summary line if present,
-    2) `Health: X/100` + top finding id,
-    3) first meaningful sentence in executive summary body.
-  - Normalize commit subject to a single line and keep <= 120 chars.
-- Commit and push review outputs:
-  - `git add -A`
-  - `git commit -m "<executive-summary-line>"`
-  - `git push origin <current-branch>`
-- If publish fails, run automatic remediation loop before stopping (max 3 retries):
-  - If commit returns "nothing to commit", treat as commit success and continue to push HEAD.
-  - If push rejects with non-fast-forward/diverged:
-    - `git fetch origin`
-    - `git pull --rebase origin <current-branch>`
-    - retry push.
-  - If push fails due missing upstream:
-    - `git push -u origin <current-branch>`
-  - If push fails due protected/default branch restrictions:
-    - create fallback branch `review/<yyyyMMdd>-<shortsha>`
-    - `git push -u origin <fallback-branch>`
-    - continue only after successful push to fallback branch.
-  - If push fails due transient artifacts (known large/generated paths):
-    - unstage/remove known transient artifacts from commit (e.g. `node_modules`, build outputs, temp logs),
-    - recommit with same executive-summary subject,
-    - retry push.
-- Do not proceed to success reporting until commit+push succeeds on either primary or fallback branch.
-- If all remediation retries fail, emit `ROOT-BLOCKER-PUSH-FAILED` and stop.
-- Record commit message, SHA, target branch, retry count, remediation actions, and final push result in review artifacts.
-
-14. Return concise run summary
-- Report health, severity totals, deterministic drift totals, stale-report mismatch count, publication commit SHA/branch/message, push-retry outcome, and remediation phases created/updated.
-
-# Outputs / artifacts
-Always produce or refresh:
-- `docs/review/EXECUTIVE-SUMMARY.md`
-- `docs/review/FULL-REPORT.md`
-- `docs/review/DEVELOPER-HANDOFF.md`
-- `docs/review/PRIORITIZED-TASKS.md`
-- `docs/review/TRACEABILITY-MATRIX.md`
+  - Compare endpoint sets across:
+    - `<specSource>/remote-agent.md`
+    - `<specSource>/openclaw-remote-agent-spec.md`
+    - `<specSource>/openapi.yaml`
+    - `src/Server/Technijian.Api/Controllers/AgentsController.cs`
+  - Missing `openclaw-remote-agent-spec.md` is HIGH `AGENT-H01`.
+  - Cross-doc endpoint drift is HIGH `AGENT-H02+`.
+- OpenAPI/controller coverage:
+  - Ensure `CouncilController` and `AgentsController` public HTTP routes are represented in `openapi.yaml`.
+  - Missing coverage is HIGH `SPEC-H01+`.
+- API-SP map/database parity:
+  - Parse `usp_*` tokens from `<specSource>/apitospmap.md`; each must exist as a procedure definition in `db/**/*.sql`.
+  - Missing definitions are HIGH `DB-H01+`.
+- Backend procedure-call/database parity:
+  - Parse `usp_*` references from `src/Server/Technijian.Api/**/*.cs`; each must exist in `db/**/*.sql`.
+  - Missing definitions are HIGH `DB-H50+`.
+- Roadmap consistency sanity:
+  - If phase summary table and phase checklist blocks contradict completion state for same phase IDs, create MEDIUM `PLAN-M01`.
+6. Inspect repository and assess additional findings by severity (BLOCKER/HIGH/MEDIUM/LOW).
+7. Run relevant build/typecheck checks for reviewed scope when feasible.
+8. Generate/update review artifacts in canonical root:
+- `<appRoot>/docs/review/EXECUTIVE-SUMMARY.md`
+- `<appRoot>/docs/review/FULL-REPORT.md`
+- `<appRoot>/docs/review/DEVELOPER-HANDOFF.md`
+- `<appRoot>/docs/review/PRIORITIZED-TASKS.md`
+- `<appRoot>/docs/review/TRACEABILITY-MATRIX.md`
+- If `<appRoot>` is not `.`, also sync these files to `docs/review/*` at workspace root to prevent health-source drift.
+9. Ensure executive summary includes parseable health line in `X/100` form and deterministic-check summary counts.
+10. Health gating rule:
+- Never report `100/100` if any deterministic parity check has unresolved mismatches.
+- Build/test passing alone is not sufficient for `100/100`.
+11. Remediation-phase requirement:
+- If health is below `100/100` OR findings count is non-zero, create/update remediation phases in `.planning/ROADMAP.md` and `.planning/phases/*` so every finding is mapped to a phase/plan.
+- Blocker/High findings must map to near-term phases.
+- Medium/Low findings must be explicitly mapped to follow-on phases.
+- Update `.planning/STATE.md` with created/updated phase IDs and current focus.
+12. Return concise summary with top risks, deterministic-check deltas, and exact phase IDs created/updated.
 
 # Guardrails
-- Do not skip deterministic parity checks.
-- Do not use stale or non-latest Figma/spec sources.
-- Do not claim clean status without deterministic evidence and explicit source timestamps.
-- Do not leave findings without remediation phase mapping.
-- Do not emit `100/100` while any deterministic drift counter is non-zero.
+- Codex-only execution: use Codex-only execution; do not run non-Codex CLI wrappers.
+- Do not skip artifact generation.
+- Do not report clean status without writing updated evidence.
+- Keep severity mapping and findings IDs stable across iterations when possible.
+- Do not end review as successful if remediation is required but phases were not created/updated.
+- Do not mark design/spec checks complete unless the latest `vXX` Figma revision and latest spec source are explicitly named in the artifacts.
+- Do not mark review successful when review roots disagree on health.
+- Do not claim remote-agent parity without explicit endpoint-set comparison across spec/docs/openapi/controller.
+- Do not claim database parity without explicit `apitospmap.md` and backend `usp_*` cross-checks against `db/**/*.sql`.
+
+

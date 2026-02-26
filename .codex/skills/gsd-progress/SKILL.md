@@ -17,10 +17,10 @@ No required positional arguments. If the request lacks needed context, ask conci
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.claude/get-shit-done/workflows/progress.md
+- @C:/Users/rjain/.codex/get-shit-done/workflows/progress.md
 Then execute this process:
 ```text
-Execute the progress workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/progress.md end-to-end.
+Execute the progress workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/progress.md end-to-end.
 Preserve all routing logic (Routes A through F) and edge case handling.
 ```
 
@@ -32,5 +32,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\progress.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\progress.md
+

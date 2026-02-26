@@ -6,7 +6,7 @@ description: Validate built features through conversational UAT Use when the use
 # Purpose
 Validate built features through conversational testing with persistent state.
 
-Purpose: Confirm what Claude built actually works from user's perspective. One test at a time, plain text responses, no interrogation. When issues are found, automatically diagnose, plan fixes, and prepare for execution.
+Purpose: Confirm what Codex built actually works from user's perspective. One test at a time, plain text responses, no interrogation. When issues are found, automatically diagnose, plan fixes, and prepare for execution.
 
 Output: {phase}-UAT.md tracking all test results. If issues found: diagnosed gaps, verified fix plans ready for $gsd-execute-phase
 
@@ -29,11 +29,11 @@ Phase: <parsed-arguments> (optional)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.claude/get-shit-done/workflows/verify-work.md
-- @C:/Users/rjain/.claude/get-shit-done/templates/UAT.md
+- @C:/Users/rjain/.codex/get-shit-done/workflows/verify-work.md
+- @C:/Users/rjain/.codex/get-shit-done/templates/UAT.md
 Then execute this process:
 ```text
-Execute the verify-work workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/verify-work.md end-to-end.
+Execute the verify-work workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/verify-work.md end-to-end.
 Preserve all workflow gates (session management, test presentation, diagnosis, fix planning, routing).
 ```
 
@@ -45,5 +45,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\verify-work.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\verify-work.md
+

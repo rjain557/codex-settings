@@ -28,10 +28,10 @@ Target: <parsed-arguments> (optional flags)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.claude/get-shit-done/workflows/gen-ci-pipeline.md
+- @C:/Users/rjain/.codex/get-shit-done/workflows/gen-ci-pipeline.md
 Then execute this process:
 ```text
-Execute the gen-ci-pipeline workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-ci-pipeline.md end-to-end.
+Execute the gen-ci-pipeline workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-ci-pipeline.md end-to-end.
 Detect project components, ask platform and deploy target, generate pipeline YAML with build/test/deploy stages.
 ```
 
@@ -43,5 +43,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\gen-ci-pipeline.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\gen-ci-pipeline.md
+

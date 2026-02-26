@@ -24,10 +24,10 @@ Expected argument shape from source: <description>.
 Load and follow these referenced artifacts first:
 - @.planning/ROADMAP.md
 - @.planning/STATE.md
-- @C:/Users/rjain/.claude/get-shit-done/workflows/add-phase.md
+- @C:/Users/rjain/.codex/get-shit-done/workflows/add-phase.md
 Then execute this process:
 ```text
-**Follow the add-phase workflow** from `@C:/Users/rjain/.claude/get-shit-done/workflows/add-phase.md`.
+**Follow the add-phase workflow** from `@C:/Users/rjain/.codex/get-shit-done/workflows/add-phase.md`.
 
 The workflow handles all logic including:
 1. Argument parsing and validation
@@ -48,5 +48,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\add-phase.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\add-phase.md
+

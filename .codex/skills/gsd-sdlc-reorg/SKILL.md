@@ -100,5 +100,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\sdlc-reorg.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\sdlc-reorg.md
+

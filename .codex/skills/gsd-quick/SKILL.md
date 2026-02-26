@@ -27,10 +27,10 @@ Context from source:
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.claude/get-shit-done/workflows/quick.md
+- @C:/Users/rjain/.codex/get-shit-done/workflows/quick.md
 Then execute this process:
 ```text
-Execute the quick workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/quick.md end-to-end.
+Execute the quick workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/quick.md end-to-end.
 Preserve all workflow gates (validation, task description, planning, execution, state updates, commits).
 ```
 
@@ -42,5 +42,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\quick.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\quick.md
+

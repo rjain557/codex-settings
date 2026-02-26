@@ -31,14 +31,14 @@ Context from source:
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.claude/get-shit-done/workflows/new-project.md
-- @C:/Users/rjain/.claude/get-shit-done/references/questioning.md
-- @C:/Users/rjain/.claude/get-shit-done/references/ui-brand.md
-- @C:/Users/rjain/.claude/get-shit-done/templates/project.md
-- @C:/Users/rjain/.claude/get-shit-done/templates/requirements.md
+- @C:/Users/rjain/.codex/get-shit-done/workflows/new-project.md
+- @C:/Users/rjain/.codex/get-shit-done/references/questioning.md
+- @C:/Users/rjain/.codex/get-shit-done/references/ui-brand.md
+- @C:/Users/rjain/.codex/get-shit-done/templates/project.md
+- @C:/Users/rjain/.codex/get-shit-done/templates/requirements.md
 Then execute this process:
 ```text
-Execute the new-project workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/new-project.md end-to-end.
+Execute the new-project workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/new-project.md end-to-end.
 Preserve all workflow gates (validation, approvals, commits, routing).
 ```
 
@@ -50,5 +50,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\new-project.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\new-project.md
+

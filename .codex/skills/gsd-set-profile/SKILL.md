@@ -4,7 +4,7 @@ description: Switch model profile for GSD agents (quality/balanced/budget) Use w
 ---
 
 # Purpose
-Switch the model profile used by GSD agents. Controls which Claude model each agent uses, balancing quality vs token spend.
+Switch the model profile used by GSD agents. Controls which Codex model each agent uses, balancing quality vs token spend.
 
 Routes to the set-profile workflow which handles:
 - Argument validation (quality/balanced/budget)
@@ -22,10 +22,10 @@ Expected argument shape from source: <profile>.
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.claude/get-shit-done/workflows/set-profile.md
+- @C:/Users/rjain/.codex/get-shit-done/workflows/set-profile.md
 Then execute this process:
 ```text
-**Follow the set-profile workflow** from `@C:/Users/rjain/.claude/get-shit-done/workflows/set-profile.md`.
+**Follow the set-profile workflow** from `@C:/Users/rjain/.codex/get-shit-done/workflows/set-profile.md`.
 
 The workflow handles all logic including:
 1. Profile argument validation
@@ -43,5 +43,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\set-profile.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\set-profile.md
+

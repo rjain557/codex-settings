@@ -31,10 +31,10 @@ Target: <parsed-arguments> (optional flags)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.claude/get-shit-done/workflows/gen-integration-test.md
+- @C:/Users/rjain/.codex/get-shit-done/workflows/gen-integration-test.md
 Then execute this process:
 ```text
-Execute the gen-integration-test workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-integration-test.md end-to-end.
+Execute the gen-integration-test workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-integration-test.md end-to-end.
 Discover endpoints from OpenAPI spec or controllers. Generate WebApplicationFactory, test auth handler, test data builders, and per-controller test classes.
 ```
 
@@ -46,5 +46,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\gen-integration-test.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\gen-integration-test.md
+

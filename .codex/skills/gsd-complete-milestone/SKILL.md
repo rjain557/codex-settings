@@ -32,8 +32,8 @@ Context from source:
 # Workflow
 Load and follow these referenced artifacts first:
 - **Load these files NOW (before proceeding):**
-- - @C:/Users/rjain/.claude/get-shit-done/workflows/complete-milestone.md (main workflow)
-- - @C:/Users/rjain/.claude/get-shit-done/templates/milestone-archive.md (archive template)
+- - @C:/Users/rjain/.codex/get-shit-done/workflows/complete-milestone.md (main workflow)
+- - @C:/Users/rjain/.codex/get-shit-done/templates/milestone-archive.md (archive template)
 Then execute this process:
 ```text
 **Follow complete-milestone.md workflow:**
@@ -118,5 +118,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\complete-milestone.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\complete-milestone.md
+

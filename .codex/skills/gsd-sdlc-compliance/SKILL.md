@@ -31,10 +31,10 @@ Target: <parsed-arguments> (optional flags)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.claude/get-shit-done/workflows/sdlc-compliance.md
+- @C:/Users/rjain/.codex/get-shit-done/workflows/sdlc-compliance.md
 Then execute this process:
 ```text
-Execute the sdlc-compliance workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/sdlc-compliance.md end-to-end.
+Execute the sdlc-compliance workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/sdlc-compliance.md end-to-end.
 Read Phase A compliance declarations. Scan the full codebase for compliance patterns. Generate evidence report with pass/warn/fail per check and gap remediation steps.
 ```
 
@@ -46,5 +46,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\sdlc-compliance.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\sdlc-compliance.md
+

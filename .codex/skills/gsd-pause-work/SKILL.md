@@ -23,10 +23,10 @@ No required positional arguments. If the request lacks needed context, ask conci
 # Workflow
 Load and follow these referenced artifacts first:
 - @.planning/STATE.md
-- @C:/Users/rjain/.claude/get-shit-done/workflows/pause-work.md
+- @C:/Users/rjain/.codex/get-shit-done/workflows/pause-work.md
 Then execute this process:
 ```text
-**Follow the pause-work workflow** from `@C:/Users/rjain/.claude/get-shit-done/workflows/pause-work.md`.
+**Follow the pause-work workflow** from `@C:/Users/rjain/.codex/get-shit-done/workflows/pause-work.md`.
 
 The workflow handles all logic including:
 1. Phase directory detection
@@ -44,5 +44,6 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Claude command file)
-- C:\Users\rjain\.claude\commands\gsd\pause-work.md
+# Source (path to original Codex command file)
+- C:\Users\rjain\.codex\commands\gsd\pause-work.md
+
