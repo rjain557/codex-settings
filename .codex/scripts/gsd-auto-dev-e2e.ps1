@@ -9,7 +9,7 @@ param(
     [string]$ProjectRoot = (Get-Location).Path,
     [string]$RoadmapPath = ".planning/ROADMAP.md",
     [string]$StatePath = ".planning/STATE.md",
-    [bool]$StrictRoot = $true,
+    [switch]$StrictRoot = $true,
     [string[]]$SummaryPaths = @(
         "docs/review/EXECUTIVE-SUMMARY.md",
         "tech-web-mytest/docs/review/EXECUTIVE-SUMMARY.md"
@@ -30,24 +30,47 @@ if ($OpenWindow) {
         throw "Cannot relaunch: script path not found ($selfPath)."
     }
 
-    $argList = @(
-        "-ExecutionPolicy", "Bypass",
-        "-File", $selfPath,
-        "-MaxOuterLoops", $MaxOuterLoops,
-        "-AutoDevMaxCycles", $AutoDevMaxCycles,
-        "-ProjectRoot", $ProjectRoot,
-        "-RoadmapPath", $RoadmapPath,
-        "-StatePath", $StatePath,
-        "-LogDir", $LogDir,
-        "-StatusFile", $StatusFile,
-        "-HeartbeatSeconds", $HeartbeatSeconds,
-        "-StrictRoot:$StrictRoot"
-    )
-    foreach ($sp in @($SummaryPaths)) {
-        $argList += @("-SummaryPaths", $sp)
+    $launcherDir = Join-Path $env:TEMP "codex-gsd-launchers"
+    if (-not (Test-Path $launcherDir)) {
+        New-Item -ItemType Directory -Path $launcherDir -Force | Out-Null
     }
-    if ($DryRun) { $argList += "-DryRun" }
 
+    $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+    $launcherPath = Join-Path $launcherDir ("run-gsd-e2e-{0}.ps1" -f $stamp)
+
+    $selfEsc = $selfPath.Replace("'", "''")
+    $projectEsc = $ProjectRoot.Replace("'", "''")
+    $roadmapEsc = $RoadmapPath.Replace("'", "''")
+    $stateEsc = $StatePath.Replace("'", "''")
+    $logDirEsc = $LogDir.Replace("'", "''")
+    $statusEsc = $StatusFile.Replace("'", "''")
+    $strictLiteral = if ($StrictRoot) { '$true' } else { '$false' }
+    $summaryItems = @()
+    foreach ($sp in @($SummaryPaths)) {
+        $summaryItems += ("'{0}'" -f $sp.Replace("'", "''"))
+    }
+    $summaryLiteral = if ($summaryItems.Count -gt 0) { "@({0})" -f ($summaryItems -join ", ") } else { "@()" }
+    $dryLine = if ($DryRun) { '`$params.DryRun = `$true' } else { '' }
+
+    $launcherContent = @"
+`$params = @{
+    MaxOuterLoops = $MaxOuterLoops
+    AutoDevMaxCycles = $AutoDevMaxCycles
+    ProjectRoot = '$projectEsc'
+    RoadmapPath = '$roadmapEsc'
+    StatePath = '$stateEsc'
+    LogDir = '$logDirEsc'
+    StatusFile = '$statusEsc'
+    HeartbeatSeconds = $HeartbeatSeconds
+    StrictRoot = $strictLiteral
+    SummaryPaths = $summaryLiteral
+}
+$dryLine
+& '$selfEsc' @params
+"@
+    Set-Content -Path $launcherPath -Value $launcherContent -Encoding UTF8
+
+    $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $launcherPath)
     $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $argList -WindowStyle Normal -PassThru
     Write-Host ("Launched gsd-auto-dev-e2e in a new PowerShell window (PID={0})." -f $proc.Id) -ForegroundColor Green
     return
@@ -109,6 +132,54 @@ function Ensure-GitOnPath {
     if (-not (($env:Path -split ';') -contains $gitDir)) {
         $env:Path = "$env:Path;$gitDir"
     }
+}
+
+function Convert-WindowsPathToWsl {
+    param([string]$PathValue)
+
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return $null }
+
+    $candidate = $PathValue
+    try {
+        if (Test-Path $PathValue) {
+            $candidate = (Resolve-Path -Path $PathValue).Path
+        }
+    } catch { }
+
+    $output = $null
+    try {
+        $output = & wsl.exe wslpath -a "$candidate" 2>$null
+    } catch {
+        return $null
+    }
+    if ([string]::IsNullOrWhiteSpace($output)) { return $null }
+
+    $rows = @($output)
+    if ($rows.Count -eq 0) { return $null }
+    return ([string]$rows[0]).Trim()
+}
+
+function Resolve-WslCodexPath {
+    $wsl = Get-Command wsl.exe -ErrorAction SilentlyContinue
+    if (-not $wsl) { return $null }
+
+    $userSegment = $env:USERNAME
+    if ([string]::IsNullOrWhiteSpace($userSegment)) { return $null }
+
+    $probe = "ls -1 /mnt/c/Users/{0}/.vscode/extensions/openai.chatgpt-*-win32-x64/bin/linux-x86_64/codex 2>/dev/null | sort | tail -n 1" -f $userSegment
+    $output = $null
+    try {
+        $output = & wsl.exe bash -lc $probe
+    } catch {
+        return $null
+    }
+
+    $rows = @($output)
+    if ($rows.Count -eq 0) { return $null }
+    $first = [string]$rows[0]
+    if ([string]::IsNullOrWhiteSpace($first)) { return $null }
+
+    return $first.Trim()
 }
 
 function Resolve-PathFromRoot {
@@ -582,8 +653,20 @@ function Invoke-GlobalSkillMonitored {
 
     Set-Content -Path $promptFile -Value $Prompt -NoNewline -Encoding UTF8
 
-    $cmd = "type `"{0}`" | `"{1}`" exec - --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd `"{2}`"" -f $promptFile, $script:CodexExe, $script:ResolvedProjectRoot
-    $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardOutput $LogFile -RedirectStandardError $errFile
+    if ($script:UseWslCodex) {
+        $promptFileWsl = Convert-WindowsPathToWsl -PathValue $promptFile
+        $projectRootWsl = Convert-WindowsPathToWsl -PathValue $script:ResolvedProjectRoot
+        if ([string]::IsNullOrWhiteSpace($promptFileWsl) -or [string]::IsNullOrWhiteSpace($projectRootWsl)) {
+            throw "Unable to convert prompt/project path to WSL path for nested codex execution."
+        }
+
+        $wslCmd = 'cat "$1" | "$2" exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$3"'
+        $proc = Start-Process -FilePath "wsl.exe" -ArgumentList @("bash", "-lc", $wslCmd, "gsd-auto-dev", $promptFileWsl, $script:WslCodexPath, $projectRootWsl) -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardOutput $LogFile -RedirectStandardError $errFile
+    } else {
+        # Use stdin piping with --cd . to avoid Windows quoting/splitting issues for spaced paths.
+        $cmd = "type `"{0}`" | `"{1}`" exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd ." -f $promptFile, $script:CodexExe
+        $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardOutput $LogFile -RedirectStandardError $errFile
+    }
 
     $lastHeartbeat = (Get-Date).AddSeconds(-1 * [math]::Max(1, $HeartbeatSeconds))
 
@@ -643,11 +726,18 @@ if ($StrictRoot) {
 
 Set-Location $script:ResolvedProjectRoot
 
-$script:CodexExe = Resolve-CodexCommand
-if (-not $script:CodexExe) {
-    throw "codex executable not found. Install/login Codex CLI first."
+$script:WslCodexPath = Resolve-WslCodexPath
+$script:UseWslCodex = -not [string]::IsNullOrWhiteSpace($script:WslCodexPath)
+
+if ($script:UseWslCodex) {
+    $script:CodexExe = "wsl:{0}" -f $script:WslCodexPath
+} else {
+    $script:CodexExe = Resolve-CodexCommand
+    if (-not $script:CodexExe) {
+        throw "codex executable not found. Install/login Codex CLI first."
+    }
+    Ensure-CodexOnPath -CodexExePath $script:CodexExe
 }
-Ensure-CodexOnPath -CodexExePath $script:CodexExe
 
 $script:GitExe = Resolve-GitCommand
 if (-not $script:GitExe) {
@@ -713,6 +803,10 @@ Execution contract:
   2) parallel multi-agent planning for all pending phases needing plans,
   3) sequential execution of phases in deterministic roadmap order.
 - During `$gsd-sdlc-review`, run detailed review with parallel multi-agent fan-out for layers/gates, then aggregate deterministically.
+- Use the native shell available on this host (Windows cmd/PowerShell). Do not require Bash.
+- For scripted operations, prefer explicit PowerShell path:
+  - `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "<...>"`
+- Avoid complex nested quoting in `cmd.exe /c` one-liners; split work into simpler commands.
 - Strict root must remain enforced with:
   - project root `{1}`
   - roadmap path `{2}`
