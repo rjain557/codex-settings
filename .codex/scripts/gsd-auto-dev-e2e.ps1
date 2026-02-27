@@ -284,6 +284,8 @@ function Get-DeepReviewEvidence {
         try { $json = $jsonRaw | ConvertFrom-Json -ErrorAction Stop } catch { $json = $null }
 
         $deepStatus = ""
+        $deepHealthScore = $null
+        $hasTotalFindings = $false
         $lineTraceStatus = ""
         $generatedUtc = $null
 
@@ -297,6 +299,24 @@ function Get-DeepReviewEvidence {
 
             if ($json.PSObject.Properties.Name -contains "lineTraceability" -and $json.lineTraceability) {
                 $lineTraceStatus = [string]$json.lineTraceability.status
+            }
+
+            if (($json.PSObject.Properties.Name -contains "deepReview") -and $json.deepReview) {
+                if ($json.deepReview.PSObject.Properties.Name -contains "healthScore") {
+                    $deepHealthScore = $json.deepReview.healthScore
+                }
+            }
+
+            if (($json.PSObject.Properties.Name -contains "totals") -and $json.totals) {
+                if ($json.totals.PSObject.Properties.Name -contains "TOTAL_FINDINGS") {
+                    $tf = $json.totals.TOTAL_FINDINGS
+                    if ($null -ne $tf) {
+                        $parsedTf = 0
+                        if ([int]::TryParse([string]$tf, [ref]$parsedTf)) {
+                            $hasTotalFindings = $true
+                        }
+                    }
+                }
             }
 
             $generatedText = ""
@@ -317,14 +337,20 @@ function Get-DeepReviewEvidence {
 
         $freshEnough = $effectiveUtc -ge $NotBeforeUtc.AddMinutes(-1)
         $deepStatusIngested = $deepStatus -match '^\s*INGESTED\s*$'
+        $deepStatusUnparsable = $deepStatus -match '^\s*UNPARSABLE\s*$'
+        $deepStatusMissing = [string]::IsNullOrWhiteSpace($deepStatus)
         $lineTracePassed = $lineTraceStatus -match '^\s*(PASSED|PASS)\s*$'
+        $parsedDeepHealth = 0
+        $deepHealthValid = ([int]::TryParse([string]$deepHealthScore, [ref]$parsedDeepHealth)) -and ($parsedDeepHealth -ge 0)
 
-        $ok = $freshEnough -and (-not $deepStatusIngested) -and (-not $deepIngestedSummary) -and (-not $deepFromSummarySource) -and $lineTracePassed
+        $ok = $freshEnough -and (-not $deepStatusIngested) -and (-not $deepStatusUnparsable) -and (-not $deepStatusMissing) -and $deepHealthValid -and $hasTotalFindings -and (-not $deepIngestedSummary) -and (-not $deepFromSummarySource) -and $lineTracePassed
 
         $rows.Add([PSCustomObject]@{
             SummaryPath            = $summaryPath
             CodeReviewSummaryPath  = $codeReviewSummaryPath
             DeepStatus             = $deepStatus
+            DeepHealthScore        = $deepHealthScore
+            HasTotalFindings       = $hasTotalFindings
             LineTraceabilityStatus = $lineTraceStatus
             GeneratedUtc           = $effectiveUtc
             FreshEnough            = $freshEnough
@@ -356,6 +382,12 @@ function Get-DeepReviewEvidence {
     $reasons = New-Object System.Collections.Generic.List[string]
     if (-not $best.FreshEnough) { $reasons.Add("stale-code-review-summary") | Out-Null }
     if ($best.DeepStatus -match '^\s*INGESTED\s*$') { $reasons.Add("deep-status-ingested") | Out-Null }
+    if ($best.DeepStatus -match '^\s*UNPARSABLE\s*$') { $reasons.Add("deep-status-unparsable") | Out-Null }
+    if ([string]::IsNullOrWhiteSpace([string]$best.DeepStatus)) { $reasons.Add("deep-status-missing") | Out-Null }
+    $parsedBestDeepHealth = 0
+    $bestDeepHealthValid = ([int]::TryParse([string]$best.DeepHealthScore, [ref]$parsedBestDeepHealth)) -and ($parsedBestDeepHealth -ge 0)
+    if (-not $bestDeepHealthValid) { $reasons.Add("deep-health-invalid") | Out-Null }
+    if (-not $best.HasTotalFindings) { $reasons.Add("deep-total-findings-missing") | Out-Null }
     if ($best.DeepIngestedSummary) { $reasons.Add("deep-review-totals-ingested") | Out-Null }
     if ($best.DeepFromSummarySource) { $reasons.Add("deep-review-source-summary-artifact") | Out-Null }
     if (-not ($best.LineTraceabilityStatus -match '^\s*(PASSED|PASS)\s*$')) { $reasons.Add("line-traceability-not-passed") | Out-Null }
@@ -961,6 +993,8 @@ Execution contract:
 - Forbidden: manually patching `{4}/EXECUTIVE-SUMMARY.md` to reset or force `Health`, `Code Review Totals`, or `Deep Review Totals`.
 - Forbidden: any `Deep Review Totals: STATUS=INGESTED` sourced from `{4}/EXECUTIVE-SUMMARY.md`.
 - Require fresh `{4}/layers/code-review-summary.json` from this run with `lineTraceability.status=PASSED`.
+- Require `deepReview.status` to be parseable and not `UNPARSABLE`/`INGESTED`, with non-negative deep-review health and parseable TOTAL_FINDINGS in the same artifact.
+- If review is non-clean (health<100, drift>0, unmapped>0, deep-review invalid/unparsable, or findings>0) and pending phase count is 0, you MUST synthesize new remediation phases + plans immediately before ending the cycle.
 - Use the native shell available on this host (Windows cmd/PowerShell). Do not require Bash.
 - For scripted operations, prefer explicit PowerShell path:
   - `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "<...>"`
@@ -996,6 +1030,18 @@ Confirmation contract:
 '@
 $confirmPrompt = [string]::Format($confirmPromptTemplate, $script:ReviewRootRelativeEffective)
 
+$phaseSynthesisPromptTemplate = @'
+$gsd-sdlc-review
+
+Remediation phase synthesis contract:
+- Run a fresh `$gsd-sdlc-review` for the current code at review root `{0}`.
+- If health is below `100/100`, deterministic drift is non-zero, unmapped findings are non-zero, deep review is invalid/unparsable, or any findings exist, you MUST create new unchecked remediation phases in `{1}` and matching actionable `*-PLAN.md` files under `.planning/phases`.
+- Do not stop with stuck-guard when findings exist and pending phase count is zero.
+- Update `{2}` with newly created phase ids and next action.
+- Return the exact phase numbers created.
+'@
+$phaseSynthesisPrompt = [string]::Format($phaseSynthesisPromptTemplate, $script:ReviewRootRelativeEffective, $RoadmapPath, $StatePath)
+
 for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
     $cycleStartUtc = (Get-Date).ToUniversalTime()
     $pendingBefore = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
@@ -1023,6 +1069,38 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Doing "evaluating clean-candidate gates" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
     if (-not $deepReviewEvidence.Ok) {
         Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-auto-dev-deep-review-invalid" -Doing ("deep-review evidence invalid: {0}" -f $deepReviewEvidence.Reason) -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
+    }
+
+    $needsPhaseSynthesis = (
+        $pendingAfter.Count -eq 0 -and (
+            -not $metric -or
+            -not $metric.Complete -or
+            $metric.Health -ne 100 -or
+            $metric.Drift -ne 0 -or
+            $metric.Unmapped -ne 0 -or
+            -not $deepReviewEvidence.Ok
+        )
+    )
+
+    if ($needsPhaseSynthesis) {
+        $synthLog = Join-Path $script:ResolvedLogDir ("phase-synthesis-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
+        $phaseSynthesisExit = Invoke-GlobalSkillMonitored -Prompt $phaseSynthesisPrompt -LogFile $synthLog -Stage "phase-synthesis" -Cycle $cycle -Phase "-" -Doing "forcing remediation phase synthesis from latest review findings"
+
+        $pushAfterSynthesis = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-synthesis"
+        if (-not $pushAfterSynthesis.Ok) {
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterSynthesis.Status) -Doing "stopping after phase-synthesis push failure" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
+            $stopReason = $pushAfterSynthesis.Status
+            break
+        }
+
+        $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+        $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+        $deepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $cycleStartUtc
+
+        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Doing "re-evaluated metrics after forced phase synthesis" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
+        if (-not $deepReviewEvidence.Ok) {
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-phase-synthesis-deep-review-invalid" -Doing ("deep-review evidence still invalid: {0}" -f $deepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
+        }
     }
 
     $isCleanCandidate = (

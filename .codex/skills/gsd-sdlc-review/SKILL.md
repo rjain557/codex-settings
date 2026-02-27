@@ -104,10 +104,12 @@ Artifact root selection:
   - Single-layer mode (`--layer=...`) must run the corresponding reviewer and still include severity outputs for that layer.
 - Require/update layer outputs under `docs/review/layers/` for each detected in-scope component.
 - Consolidate code-review severity counts into one artifact `docs/review/layers/code-review-summary.json`.
+- Deep review must be computed from current-run code/layer analysis outputs, not by ingesting prior summary artifacts.
 - Deep-review ingestion must parse both summary formats:
   - `Findings: <b> Critical/Blocker | <h> High | <m> Medium | <l> Low`
   - `Findings: <b> Blocker | <h> High | <m> Medium | <l> Low`
 - Deep-review ingestion must also capture dead-code and traceability-gap totals from current-run artifacts when reported.
+- `deepReview.status` in `docs/review/layers/code-review-summary.json` must be parseable and not `UNPARSABLE`/`INGESTED`; otherwise emit blocker `DEEPREVIEW-BLOCKER-MISSING-001` and force remediation phase creation in the same run.
 - Emit one parseable line in executive/full report:
   - `Code Review Totals: AUTH=<b>/<h>/<m>/<l> BACKEND=<b>/<h>/<m>/<l> DATABASE=<b>/<h>/<m>/<l> FRONTEND=<b>/<h>/<m>/<l> OTHER=<b>/<h>/<m>/<l> TOTAL_FINDINGS=<n>`
 - Treat build/typecheck failure as BLOCKER.
@@ -199,7 +201,7 @@ Artifact root selection:
 - If implementation census is zero, health must remain <=20.
 - If any required runtime gate is `UNVERIFIED`, cap health at <=80.
 - If any required runtime gate is `FAIL`, cap health at <=60.
-- If deep review status is `INGESTED` or sourced from summary artifacts instead of current-run layer analysis, cap health at <=60.
+- If deep review status is `INGESTED`, `UNPARSABLE`, empty, or sourced from summary artifacts instead of current-run layer analysis, cap health at <=60.
 
 14. Mandatory post-review publication commit to GitHub
 - After artifacts are generated, build commit message from `docs/review/EXECUTIVE-SUMMARY.md`:
@@ -252,6 +254,7 @@ Always produce or refresh:
 - Do not run layer/runtime review as a single-agent serial pass when parallel fan-out is available.
 - Do not skip current-run code-review layer analysis for detected in-scope components.
 - Do not set or keep `Deep Review Totals: STATUS=INGESTED` based on `docs/review/EXECUTIVE-SUMMARY.md` artifact ingestion.
+- Do not accept `Deep Review Totals: STATUS=UNPARSABLE`; treat it as a blocker that requires new remediation phase generation.
 - Do not manually patch `Health`, `Code Review Totals`, or `Deep Review Totals` in executive/full report to force clean metrics.
 - Regenerate `docs/review/layers/code-review-summary.json` every run with current-run timestamp and `lineTraceability.status=PASSED`.
 - Do not skip required runtime gates in full SDLC review or auto-dev re-review cycles.

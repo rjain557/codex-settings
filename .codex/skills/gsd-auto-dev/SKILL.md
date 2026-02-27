@@ -96,6 +96,8 @@ Artifact root selection:
 - Parse prioritized tasks and verify findings-to-phase mapping is complete.
 - If unmapped findings exist, create remediation phases immediately and continue loop.
 - If deterministic drift total is non-zero, ensure mapped remediation phases exist for each non-zero category before next cycle.
+- If health < 100 or any severity finding totals are non-zero and pending phase count is `0`, create new remediation phases in the same cycle before continuing.
+- Treat deep review statuses `UNPARSABLE`, missing `layers/code-review-summary.json`, or any deep-review validation failure as non-clean and force remediation phase creation instead of stopping.
 
 7. Final code-completeness gate (mandatory clean-candidate step)
 - If and only if cycle metrics are clean-candidate:
@@ -139,7 +141,8 @@ Artifact root selection:
 - final confirmation `$gsd-sdlc-review` still reports `100/100` and drift total `0` after no execution work in between.
 - final confirmation `$gsd-sdlc-review` must be a full rerun (not artifact-only confirmation) and must refresh deep review artifacts.
 - Limit: `cycle > max_cycles`.
-- Stuck guard: no phase execution occurred in a cycle and health/drift did not improve.
+- Never trigger stuck guard while any non-clean signal exists (`health<100`, `drift>0`, `unmapped>0`, runtime gate failures/unverified, deep-review invalid/unparsable, or any findings > 0).
+- Stuck guard is allowed only when no phase execution occurred, no new remediation phases were created, and all non-clean signals are already resolved.
 
 9. Final output
 - Report cycles run, phases processed per cycle, failures, final health, deterministic drift totals, runtime gate totals, finalreview metrics (`coverage_percent`, `unmapped_lines`, `summary_hash`, `commit_sha`), remaining pending phases, stop reason, exact summary paths/values used, and git commits completed during the run.

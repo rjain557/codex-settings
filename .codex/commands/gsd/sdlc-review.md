@@ -12,6 +12,7 @@ allowed-tools:
 ---
 <objective>
 Run SDLC code review and refresh `docs/review/*` reports used by remediation loops.
+Always run a fresh deep code review against current source code (not prior report artifact ingestion).
 When review health is below 100 or findings exist, create actionable remediation phases so auto-dev can continue toward 100/100.
 </objective>
 <context>
@@ -22,6 +23,10 @@ Options: $ARGUMENTS
 <process>
 1) Determine scope from options (default full review).
 2) Inspect code and run relevant build/typecheck checks for scope.
+2.1) Mandatory deep code-review gate (every run):
+   - Run a fresh multi-layer deep review over current code files (`src/**`, `db/**`, generated sources when present).
+   - Do not derive deep-review status/totals by re-ingesting `docs/review/EXECUTIVE-SUMMARY.md` or other prior report artifacts.
+   - Regenerate `docs/review/layers/code-review-summary.json` in this run with parseable `deepReview.status`, deep totals, and line-traceability status.
 3) Run mandatory cross-artifact coverage checks on every full-scope pass (and whenever evidence exists in layer mode):
    - **Design parity check**:
      - Detect design sources (for example `design/figma/*`, `docs/phases/phase-c/*`, storyboard outputs).
@@ -41,14 +46,19 @@ Options: $ARGUMENTS
    - docs/review/DEVELOPER-HANDOFF.md
    - docs/review/PRIORITIZED-TASKS.md
    - docs/review/TRACEABILITY-MATRIX.md
+   - docs/review/layers/code-review-summary.json
 6) Ensure executive summary contains a parseable health score in `X/100` form and severity totals.
+6.1) Ensure deep-review evidence is parseable and fresh:
+   - `Deep Review Totals` must not report `STATUS=UNPARSABLE` or `STATUS=INGESTED`.
+   - `Deep Review Totals` source must not be `docs/review/EXECUTIVE-SUMMARY.md`.
+   - `docs/review/layers/code-review-summary.json` must include a current-run `generatedUtc` and `lineTraceability.status=PASSED`.
 7) Ensure FULL-REPORT contains a section named `Coverage Checks` with:
    - Design parity result (counts + top missing items)
    - Spec parity result (counts + top mismatches)
    - Remote-agent result (implemented vs missing evidence)
 8) Determine whether remediation phases are required:
-   - Required if health score < 100, or any Blocker/High/Medium/Low findings exist.
-   - Not required only when health is exactly 100 and findings total is 0.
+   - Required if health score < 100, any Blocker/High/Medium/Low findings exist, or deep-review evidence is missing/invalid (`UNPARSABLE`, `INGESTED`, stale, or summary-sourced).
+   - Not required only when health is exactly 100, findings total is 0, and deep-review evidence is valid current-run output.
 9) When remediation is required, create/update planning artifacts in the same pass:
    - Read `.planning/ROADMAP.md` and find current unchecked phases.
    - If no pending phase already maps to the current findings, append new unchecked phase entry/entries using next numeric phase id(s).

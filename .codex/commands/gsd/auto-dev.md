@@ -29,6 +29,7 @@ Options: $ARGUMENTS
    - execute (`/gsd:batch-execute <phase>`)
 4) Run `/gsd:sdlc-review`.
 5) Parse health from executive summary (`X/100`) and re-read pending phases.
-6) Repeat until health is 100 and no pending phases remain, or stop at max cycles/failure policy.
-7) Return cycle report with phases processed, failures, final health, and stop reason.
+6) If health < 100 or findings > 0 while pending phase count is 0, force remediation phase creation in ROADMAP from the latest review findings, then continue.
+7) Repeat until health is 100 and no pending phases remain, or stop at max cycles/failure policy.
+8) Return cycle report with phases processed, failures, final health, and stop reason.
 </process>
