@@ -22,6 +22,11 @@ Supported arguments:
 - `--roadmap-path <path>`: Explicit roadmap path (typically `.planning/ROADMAP.md`).
 - `--state-path <path>`: Explicit state path (typically `.planning/STATE.md`).
 - `--strict-root`: Fail fast when root/roadmap/state are ambiguous.
+- `--review-root <path>`: Optional review artifact root override (equivalent to env `GSD_REVIEW_ROOT`).
+
+Artifact root selection:
+- Default review root is `docs/review`.
+- If env `GSD_REVIEW_ROOT` is set (or `--review-root` is provided), all review artifacts and metrics must be read/written from that root for this run.
 
 # Workflow
 1. Preflight
@@ -69,6 +74,11 @@ Supported arguments:
 
 5. Re-review after phase execution
 - Run `$gsd-sdlc-review` (pass `--layer` when provided).
+- Require fresh deep review artifacts from current run:
+  - `docs/review/layers/code-review-summary.json` regenerated in this cycle,
+  - `lineTraceability.status=PASSED`,
+  - no `Deep Review Totals: STATUS=INGESTED` sourced from summary artifacts.
+- Deep review ingestion must accept both `Critical/Blocker` and `Blocker` finding-summary formats and include reported dead-code / traceability-gap totals in severity evaluation.
 - Parse health from every candidate summary as `X/100`.
 - Parse deterministic drift totals from:
   - `Deterministic Drift Totals: ... TOTAL=<n>`
@@ -126,7 +136,8 @@ Supported arguments:
     - `drift_total=0`,
     - `pending_remediation=0`,
   - finalreview confirm-only pass reports unchanged commit SHA and identical summary hash,
-  - final confirmation `$gsd-sdlc-review` still reports `100/100` and drift total `0` after no execution work in between.
+- final confirmation `$gsd-sdlc-review` still reports `100/100` and drift total `0` after no execution work in between.
+- final confirmation `$gsd-sdlc-review` must be a full rerun (not artifact-only confirmation) and must refresh deep review artifacts.
 - Limit: `cycle > max_cycles`.
 - Stuck guard: no phase execution occurred in a cycle and health/drift did not improve.
 
@@ -154,10 +165,12 @@ Summarize and reference:
 # Guardrails
 - Always run in write mode by default for auto-dev.
 - Always run `$gsd-sdlc-review` after remediation work in each cycle.
+- Do not accept cycle clean-state if deep review evidence is stale, ingested-only, or missing line-traceability PASS.
 - Always run `$gsd-sdlc-finalreview` before declaring success.
 - Do not substitute `$gsd-code-review` for `$gsd-sdlc-review` in this skill.
 - Do not skip research/planning gates before execution.
 - Do not execute phases in parallel; execution remains strictly sequential and deterministic.
 - Parallelism is allowed only for research/planning fan-out and must preserve deterministic phase ordering in result aggregation.
+- Do not write review outputs outside the selected review root (`GSD_REVIEW_ROOT` when set, otherwise `docs/review`).
 - Do not claim success unless all clean-state conditions and finalreview confirmation conditions are satisfied.
 - Do not treat missing runtime gate lines, `UNVERIFIED` runtime gates, or runtime gate failures as clean.

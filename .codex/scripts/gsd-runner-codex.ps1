@@ -25,7 +25,8 @@ param(
     [string]$PlanReasoningEffort = "xhigh",
     [string]$ExecuteReasoningEffort = "medium",
     [string]$ReviewReasoningEffort = "xhigh",
-    [int]$MaxParallel = 3
+    [int]$MaxParallel = 3,
+    [string]$ReviewRootRelative = "docs/review"
 )
 
 $ErrorActionPreference = "Continue"
@@ -87,6 +88,18 @@ function Find-GsdProjectRoot {
     return $null
 }
 
+function Resolve-ReviewRootPath {
+    param(
+        [string]$Root,
+        [string]$RelativeOrAbsolute
+    )
+    $value = if ([string]::IsNullOrWhiteSpace($RelativeOrAbsolute)) { "docs/review" } else { $RelativeOrAbsolute }
+    if ([System.IO.Path]::IsPathRooted($value)) {
+        return [System.IO.Path]::GetFullPath($value)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $Root ($value -replace '/', '\')))
+}
+
 $projectRoot = Find-GsdProjectRoot $ProjectPath
 if (-not $projectRoot) {
     Write-Host "ERROR: No GSD project found. Missing .planning/ROADMAP.md" -ForegroundColor Red
@@ -97,6 +110,13 @@ $projectName = Split-Path $projectRoot -Leaf
 $logFile = Join-Path $projectRoot ".planning\execution-log-codex.txt"
 $agentOutputDir = Join-Path $projectRoot ".planning\agent-output"
 if (-not (Test-Path $agentOutputDir)) { New-Item -Path $agentOutputDir -ItemType Directory -Force | Out-Null }
+$resolvedReviewRoot = Resolve-ReviewRootPath -Root $projectRoot -RelativeOrAbsolute $ReviewRootRelative
+$effectiveReviewRoot = if ([System.IO.Path]::IsPathRooted($ReviewRootRelative)) {
+    $resolvedReviewRoot
+} else {
+    $ReviewRootRelative.Replace("\", "/")
+}
+$env:GSD_REVIEW_ROOT = $effectiveReviewRoot
 
 $GsdHome = Join-Path $env:USERPROFILE ".codex"
 $GsdSkillsDir = Join-Path $GsdHome "skills"
@@ -697,6 +717,7 @@ if ($targetPhases.Count -eq 0) {
 Write-Banner "GSD Codex SDLC Runner"
 Write-Host "  Project: $projectName" -ForegroundColor White
 Write-Host "  Root:    $projectRoot" -ForegroundColor DarkGray
+Write-Host "  Review:  $effectiveReviewRoot" -ForegroundColor DarkGray
 Write-Host "  Range:   $StartPhase-$EndPhase" -ForegroundColor White
 Write-Host "  Phases:  $($targetPhases -join ', ')" -ForegroundColor White
 Write-Host "  Models:  prep=$PrepModel execute=$ExecuteModel review=$ReviewModel" -ForegroundColor DarkGray

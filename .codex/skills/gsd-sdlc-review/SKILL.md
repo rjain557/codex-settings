@@ -14,6 +14,11 @@ Optional arguments:
 - `--layer=frontend|backend|database|auth`
 - `--review-parallelism <n>`: Max concurrent review agents for parity/layer/runtime fan-out (default `6`)
 - `--skip-build` (allowed, but deterministic parity checks are still mandatory)
+- `--review-root <path>`: Optional artifact root override (equivalent to env `GSD_REVIEW_ROOT`).
+
+Artifact root selection:
+- Default artifact root is `docs/review`.
+- If env `GSD_REVIEW_ROOT` is set (or `--review-root` provided), treat that as the canonical review root for all reads/writes in this run.
 
 # Workflow
 1. Mandatory milestone rotation before review
@@ -99,6 +104,10 @@ Optional arguments:
   - Single-layer mode (`--layer=...`) must run the corresponding reviewer and still include severity outputs for that layer.
 - Require/update layer outputs under `docs/review/layers/` for each detected in-scope component.
 - Consolidate code-review severity counts into one artifact `docs/review/layers/code-review-summary.json`.
+- Deep-review ingestion must parse both summary formats:
+  - `Findings: <b> Critical/Blocker | <h> High | <m> Medium | <l> Low`
+  - `Findings: <b> Blocker | <h> High | <m> Medium | <l> Low`
+- Deep-review ingestion must also capture dead-code and traceability-gap totals from current-run artifacts when reported.
 - Emit one parseable line in executive/full report:
   - `Code Review Totals: AUTH=<b>/<h>/<m>/<l> BACKEND=<b>/<h>/<m>/<l> DATABASE=<b>/<h>/<m>/<l> FRONTEND=<b>/<h>/<m>/<l> OTHER=<b>/<h>/<m>/<l> TOTAL_FINDINGS=<n>`
 - Treat build/typecheck failure as BLOCKER.
@@ -190,6 +199,7 @@ Optional arguments:
 - If implementation census is zero, health must remain <=20.
 - If any required runtime gate is `UNVERIFIED`, cap health at <=80.
 - If any required runtime gate is `FAIL`, cap health at <=60.
+- If deep review status is `INGESTED` or sourced from summary artifacts instead of current-run layer analysis, cap health at <=60.
 
 14. Mandatory post-review publication commit to GitHub
 - After artifacts are generated, build commit message from `docs/review/EXECUTIVE-SUMMARY.md`:
@@ -241,10 +251,14 @@ Always produce or refresh:
 - Do not skip deterministic parity checks.
 - Do not run layer/runtime review as a single-agent serial pass when parallel fan-out is available.
 - Do not skip current-run code-review layer analysis for detected in-scope components.
+- Do not set or keep `Deep Review Totals: STATUS=INGESTED` based on `docs/review/EXECUTIVE-SUMMARY.md` artifact ingestion.
+- Do not manually patch `Health`, `Code Review Totals`, or `Deep Review Totals` in executive/full report to force clean metrics.
+- Regenerate `docs/review/layers/code-review-summary.json` every run with current-run timestamp and `lineTraceability.status=PASSED`.
 - Do not skip required runtime gates in full SDLC review or auto-dev re-review cycles.
 - Do not mark runtime gates as PASS without direct command/runtime evidence from the current run.
 - Do not treat `UNVERIFIED` runtime gates as passing.
 - Do not reuse stale `docs/review/layers/*-findings.md` from previous runs; regenerate each run.
+- Do not write review artifacts outside the selected review root (`GSD_REVIEW_ROOT` when set, otherwise `docs/review`).
 - Do not use stale or non-latest Figma/spec sources.
 - Do not claim clean status without deterministic evidence and explicit source timestamps.
 - Do not leave findings without remediation phase mapping.

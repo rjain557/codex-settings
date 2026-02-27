@@ -10,10 +10,8 @@ param(
     [string]$RoadmapPath = ".planning/ROADMAP.md",
     [string]$StatePath = ".planning/STATE.md",
     [switch]$StrictRoot = $true,
-    [string[]]$SummaryPaths = @(
-        "docs/review/EXECUTIVE-SUMMARY.md",
-        "tech-web-mytest/docs/review/EXECUTIVE-SUMMARY.md"
-    ),
+    [string]$ReviewRootRelative = "docs/review",
+    [string[]]$SummaryPaths = @(),
     [string]$LogDir = ".planning/agent-output",
     [string]$StatusFile = ".planning/agent-output/gsd-e2e-status.log",
     [int]$HeartbeatSeconds = 60,
@@ -44,6 +42,7 @@ if ($OpenWindow) {
     $stateEsc = $StatePath.Replace("'", "''")
     $logDirEsc = $LogDir.Replace("'", "''")
     $statusEsc = $StatusFile.Replace("'", "''")
+    $reviewRootEsc = $ReviewRootRelative.Replace("'", "''")
     $strictLiteral = if ($StrictRoot) { '$true' } else { '$false' }
     $summaryItems = @()
     foreach ($sp in @($SummaryPaths)) {
@@ -59,6 +58,7 @@ if ($OpenWindow) {
     ProjectRoot = '$projectEsc'
     RoadmapPath = '$roadmapEsc'
     StatePath = '$stateEsc'
+    ReviewRootRelative = '$reviewRootEsc'
     LogDir = '$logDirEsc'
     StatusFile = '$statusEsc'
     HeartbeatSeconds = $HeartbeatSeconds
@@ -201,6 +201,20 @@ function Resolve-PathFromRoot {
     return [System.IO.Path]::GetFullPath($candidate)
 }
 
+function Resolve-ReviewRootPath {
+    param(
+        [string]$Root,
+        [string]$RelativeOrAbsolute
+    )
+
+    $value = if ([string]::IsNullOrWhiteSpace($RelativeOrAbsolute)) { "docs/review" } else { $RelativeOrAbsolute }
+    if ([System.IO.Path]::IsPathRooted($value)) {
+        return [System.IO.Path]::GetFullPath($value)
+    }
+
+    return [System.IO.Path]::GetFullPath((Join-Path $Root ($value -replace '/', '\')))
+}
+
 function Resolve-SummaryMetrics {
     param([string]$Path)
 
@@ -226,6 +240,128 @@ function Resolve-SummaryMetrics {
         Health   = $health
         Drift    = $(if ($driftMatch.Success) { [int]$driftMatch.Groups[1].Value } else { $null })
         Unmapped = $(if ($unmappedMatch.Success) { [int]$unmappedMatch.Groups[1].Value } else { $null })
+    }
+}
+
+function Try-ParseUtcDateTime {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    try {
+        return [DateTime]::Parse(
+            $Text,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal
+        ).ToUniversalTime()
+    } catch {
+        return $null
+    }
+}
+
+function Get-DeepReviewEvidence {
+    param([datetime]$NotBeforeUtc)
+
+    $rows = New-Object System.Collections.Generic.List[object]
+
+    foreach ($summaryPath in @($script:ResolvedSummaryPaths)) {
+        if (-not (Test-Path $summaryPath)) { continue }
+
+        $reviewDir = Split-Path -Parent $summaryPath
+        $codeReviewSummaryPath = Join-Path $reviewDir "layers\code-review-summary.json"
+        if (-not (Test-Path $codeReviewSummaryPath)) { continue }
+
+        $summaryText = Get-Content -Raw -Path $summaryPath
+        $deepIngestedSummary = [regex]::IsMatch($summaryText, '(?im)^\s*Deep Review Totals:\s*STATUS=INGESTED\b')
+        $sourcePatternEscaped = [regex]::Escape([string]$script:ReviewSummarySourceRelative)
+        $deepFromSummarySource = [regex]::IsMatch($summaryText, ("(?im)^\s*Deep Review Totals:.*\bSOURCE={0}\b" -f $sourcePatternEscaped))
+
+        $jsonRaw = Get-Content -Raw -Path $codeReviewSummaryPath
+        $json = $null
+        try { $json = $jsonRaw | ConvertFrom-Json -ErrorAction Stop } catch { $json = $null }
+
+        $deepStatus = ""
+        $lineTraceStatus = ""
+        $generatedUtc = $null
+
+        if ($json) {
+            if ($json.PSObject.Properties.Name -contains "deepReview" -and $json.deepReview) {
+                $deepStatus = [string]$json.deepReview.status
+            }
+            if ([string]::IsNullOrWhiteSpace($deepStatus) -and ($json.PSObject.Properties.Name -contains "status")) {
+                $deepStatus = [string]$json.status
+            }
+
+            if ($json.PSObject.Properties.Name -contains "lineTraceability" -and $json.lineTraceability) {
+                $lineTraceStatus = [string]$json.lineTraceability.status
+            }
+
+            $generatedText = ""
+            if ($json.PSObject.Properties.Name -contains "generatedUtc") {
+                $generatedText = [string]$json.generatedUtc
+            }
+            if ([string]::IsNullOrWhiteSpace($generatedText) -and
+                ($json.PSObject.Properties.Name -contains "deepReview") -and
+                $json.deepReview -and
+                ($json.deepReview.PSObject.Properties.Name -contains "generatedUtc")) {
+                $generatedText = [string]$json.deepReview.generatedUtc
+            }
+            $generatedUtc = Try-ParseUtcDateTime -Text $generatedText
+        }
+
+        $mtimeUtc = (Get-Item $codeReviewSummaryPath).LastWriteTimeUtc
+        $effectiveUtc = if ($generatedUtc) { $generatedUtc } else { $mtimeUtc }
+
+        $freshEnough = $effectiveUtc -ge $NotBeforeUtc.AddMinutes(-1)
+        $deepStatusIngested = $deepStatus -match '^\s*INGESTED\s*$'
+        $lineTracePassed = $lineTraceStatus -match '^\s*(PASSED|PASS)\s*$'
+
+        $ok = $freshEnough -and (-not $deepStatusIngested) -and (-not $deepIngestedSummary) -and (-not $deepFromSummarySource) -and $lineTracePassed
+
+        $rows.Add([PSCustomObject]@{
+            SummaryPath            = $summaryPath
+            CodeReviewSummaryPath  = $codeReviewSummaryPath
+            DeepStatus             = $deepStatus
+            LineTraceabilityStatus = $lineTraceStatus
+            GeneratedUtc           = $effectiveUtc
+            FreshEnough            = $freshEnough
+            DeepIngestedSummary    = $deepIngestedSummary
+            DeepFromSummarySource  = $deepFromSummarySource
+            Ok                     = $ok
+        }) | Out-Null
+    }
+
+    if ($rows.Count -eq 0) {
+        return [PSCustomObject]@{
+            Ok     = $false
+            Reason = "missing-code-review-summary"
+            Best   = $null
+            All    = @()
+        }
+    }
+
+    $best = @($rows | Sort-Object GeneratedUtc -Descending)[0]
+    if ($best.Ok) {
+        return [PSCustomObject]@{
+            Ok     = $true
+            Reason = "ok"
+            Best   = $best
+            All    = @($rows)
+        }
+    }
+
+    $reasons = New-Object System.Collections.Generic.List[string]
+    if (-not $best.FreshEnough) { $reasons.Add("stale-code-review-summary") | Out-Null }
+    if ($best.DeepStatus -match '^\s*INGESTED\s*$') { $reasons.Add("deep-status-ingested") | Out-Null }
+    if ($best.DeepIngestedSummary) { $reasons.Add("deep-review-totals-ingested") | Out-Null }
+    if ($best.DeepFromSummarySource) { $reasons.Add("deep-review-source-summary-artifact") | Out-Null }
+    if (-not ($best.LineTraceabilityStatus -match '^\s*(PASSED|PASS)\s*$')) { $reasons.Add("line-traceability-not-passed") | Out-Null }
+    if ($reasons.Count -eq 0) { $reasons.Add("deep-review-validation-failed") | Out-Null }
+
+    return [PSCustomObject]@{
+        Ok     = $false
+        Reason = ($reasons -join ",")
+        Best   = $best
+        All    = @($rows)
     }
 }
 
@@ -691,6 +827,15 @@ function Invoke-GlobalSkillMonitored {
 $script:ResolvedProjectRoot = (Resolve-Path -Path $ProjectRoot).Path
 $script:ResolvedRoadmapPath = Resolve-PathFromRoot -Root $script:ResolvedProjectRoot -PathValue $RoadmapPath
 $script:ResolvedStatePath = Resolve-PathFromRoot -Root $script:ResolvedProjectRoot -PathValue $StatePath
+$script:ReviewRootRelativeInput = if ([string]::IsNullOrWhiteSpace($ReviewRootRelative)) { "docs/review" } else { $ReviewRootRelative }
+$script:ResolvedReviewRoot = Resolve-ReviewRootPath -Root $script:ResolvedProjectRoot -RelativeOrAbsolute $script:ReviewRootRelativeInput
+$script:ReviewRootRelativeEffective = if ([System.IO.Path]::IsPathRooted($script:ReviewRootRelativeInput)) {
+    $script:ResolvedReviewRoot
+} else {
+    $script:ReviewRootRelativeInput.Replace("\", "/")
+}
+$script:ReviewSummarySourceRelative = ($script:ReviewRootRelativeEffective.TrimEnd("/") + "/EXECUTIVE-SUMMARY.md")
+$env:GSD_REVIEW_ROOT = $script:ReviewRootRelativeEffective
 
 if ($StrictRoot) {
     $conflicts = New-Object System.Collections.Generic.List[string]
@@ -758,6 +903,9 @@ if (-not (Test-Path $statusDir) -and -not $DryRun) {
 }
 
 $script:ResolvedSummaryPaths = @()
+if (-not $PSBoundParameters.ContainsKey("SummaryPaths")) {
+    $SummaryPaths = @($script:ReviewSummarySourceRelative)
+}
 foreach ($sp in $SummaryPaths) {
     if ([System.IO.Path]::IsPathRooted($sp)) {
         $script:ResolvedSummaryPaths += $sp
@@ -768,12 +916,13 @@ foreach ($sp in $SummaryPaths) {
 
 Initialize-CommitBaselines
 
-Add-Content -Path $script:ResolvedStatusPath -Value ("[{0}] runner-start repo={1} roadmap={2} state={3} strict_root={4} max_outer={5} max_cycles={6} start_head={7} tracked_repos={8}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $script:ResolvedProjectRoot, $script:ResolvedRoadmapPath, $script:ResolvedStatePath, $StrictRoot, $MaxOuterLoops, $AutoDevMaxCycles, $script:StartHead, $script:TrackedRepos.Count)
+Add-Content -Path $script:ResolvedStatusPath -Value ("[{0}] runner-start repo={1} review_root={2} roadmap={3} state={4} strict_root={5} max_outer={6} max_cycles={7} start_head={8} tracked_repos={9}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $script:ResolvedProjectRoot, $script:ReviewRootRelativeEffective, $script:ResolvedRoadmapPath, $script:ResolvedStatePath, $StrictRoot, $MaxOuterLoops, $AutoDevMaxCycles, $script:StartHead, $script:TrackedRepos.Count)
 
 Write-Host ""
 Write-Host "Global GSD E2E Runner" -ForegroundColor Green
 Write-Host "=====================" -ForegroundColor Green
 Write-Host ("Repo root:             {0}" -f $script:ResolvedProjectRoot) -ForegroundColor White
+Write-Host ("Review root:           {0}" -f $script:ReviewRootRelativeEffective) -ForegroundColor White
 Write-Host ("Roadmap path:          {0}" -f $script:ResolvedRoadmapPath) -ForegroundColor White
 Write-Host ("State path:            {0}" -f $script:ResolvedStatePath) -ForegroundColor White
 Write-Host ("Strict root:           {0}" -f $StrictRoot) -ForegroundColor White
@@ -802,7 +951,12 @@ Execution contract:
   1) parallel multi-agent research for all pending phases needing research,
   2) parallel multi-agent planning for all pending phases needing plans,
   3) sequential execution of phases in deterministic roadmap order.
+- Review artifact root for this run: `{4}`.
 - During `$gsd-sdlc-review`, run detailed review with parallel multi-agent fan-out for layers/gates, then aggregate deterministically.
+- During `$gsd-sdlc-review`, you MUST run a fresh deep code review against current code (frontend/backend/database/auth/agent) with security + dead-code + contract analysis against latest Figma + spec/docs.
+- Forbidden: manually patching `{4}/EXECUTIVE-SUMMARY.md` to reset or force `Health`, `Code Review Totals`, or `Deep Review Totals`.
+- Forbidden: any `Deep Review Totals: STATUS=INGESTED` sourced from `{4}/EXECUTIVE-SUMMARY.md`.
+- Require fresh `{4}/layers/code-review-summary.json` from this run with `lineTraceability.status=PASSED`.
 - Use the native shell available on this host (Windows cmd/PowerShell). Do not require Bash.
 - For scripted operations, prefer explicit PowerShell path:
   - `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "<...>"`
@@ -820,19 +974,26 @@ Execution contract:
   - current metrics (health, drift, unmapped)
   - git commits completed so far in this run
 '@
-$autoDevPrompt = [string]::Format($autoDevPromptTemplate, $autoDevCommand, $script:ResolvedProjectRoot, $RoadmapPath, $StatePath)
+$autoDevPrompt = [string]::Format($autoDevPromptTemplate, $autoDevCommand, $script:ResolvedProjectRoot, $RoadmapPath, $StatePath, $script:ReviewRootRelativeEffective)
 
 $confirmPromptTemplate = @'
 $gsd-sdlc-review
 
 Confirmation contract:
 - No code changes between clean-candidate pass and this confirmation pass.
+- Re-run full deep `$gsd-sdlc-review` on current HEAD (do not reuse or summarize prior artifacts only).
+- Required scope: deep multi-agent security/dead-code/contract analysis across code files versus latest Figma + docs/spec.
+- Review artifact root for this run: `{0}`.
+- Forbidden: manual edits that force `Health`, `Code Review Totals`, or `Deep Review Totals`.
+- Forbidden: `Deep Review Totals: STATUS=INGESTED` from summary artifact source.
+- Regenerate `{0}/layers/code-review-summary.json` and keep `lineTraceability.status=PASSED`.
 - Report health, deterministic drift total, and unmapped findings.
 - Include current commit hash and whether results remain clean.
 '@
-$confirmPrompt = $confirmPromptTemplate
+$confirmPrompt = [string]::Format($confirmPromptTemplate, $script:ReviewRootRelativeEffective)
 
 for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
+    $cycleStartUtc = (Get-Date).ToUniversalTime()
     $pendingBefore = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
     $phaseText = if ($pendingBefore.Count -gt 0) { [string]$pendingBefore[0] } else { "-" }
 
@@ -853,15 +1014,20 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
 
     $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
     $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+    $deepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $cycleStartUtc
 
     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Doing "evaluating clean-candidate gates" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
+    if (-not $deepReviewEvidence.Ok) {
+        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-auto-dev-deep-review-invalid" -Doing ("deep-review evidence invalid: {0}" -f $deepReviewEvidence.Reason) -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
+    }
 
     $isCleanCandidate = (
         $metric -and $metric.Complete -and
         $metric.Health -eq 100 -and
         $metric.Drift -eq 0 -and
         $metric.Unmapped -eq 0 -and
-        $pendingAfter.Count -eq 0
+        $pendingAfter.Count -eq 0 -and
+        $deepReviewEvidence.Ok
     )
 
     if (-not $isCleanCandidate) { continue }
@@ -870,6 +1036,7 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
 
     $confirmLog = Join-Path $script:ResolvedLogDir ("final-confirm-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
     $lastConfirmLog = $confirmLog
+    $confirmStartUtc = (Get-Date).ToUniversalTime()
 
     $confirmExit = Invoke-GlobalSkillMonitored -Prompt $confirmPrompt -LogFile $confirmLog -Stage "final-confirm" -Cycle $cycle -Phase "-" -Doing "running final clean confirmation review"
 
@@ -882,10 +1049,14 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
 
     $confirmMetric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
     $pendingConfirm = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+    $confirmDeepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $confirmStartUtc
     $codeAfter = Get-CodeFingerprint
     $noCodeChanges = Test-CodeFingerprintEqual -Left $codeBefore -Right $codeAfter
 
     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -Doing ("final confirmation analyzed; no_code_changes={0}" -f $noCodeChanges) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
+    if (-not $confirmDeepReviewEvidence.Ok) {
+        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-final-confirm-deep-review-invalid" -Doing ("confirmation deep-review evidence invalid: {0}" -f $confirmDeepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
+    }
 
     $confirmClean = (
         $confirmMetric -and $confirmMetric.Complete -and
@@ -893,7 +1064,8 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
         $confirmMetric.Drift -eq 0 -and
         $confirmMetric.Unmapped -eq 0 -and
         $pendingConfirm.Count -eq 0 -and
-        $noCodeChanges
+        $noCodeChanges -and
+        $confirmDeepReviewEvidence.Ok
     )
 
     if ($confirmClean) {
