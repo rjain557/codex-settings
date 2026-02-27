@@ -44,11 +44,15 @@ if ($OpenWindow) {
     $statusEsc = $StatusFile.Replace("'", "''")
     $reviewRootEsc = $ReviewRootRelative.Replace("'", "''")
     $strictLiteral = if ($StrictRoot) { '$true' } else { '$false' }
-    $summaryItems = @()
-    foreach ($sp in @($SummaryPaths)) {
-        $summaryItems += ("'{0}'" -f $sp.Replace("'", "''"))
+    $summaryLine = ""
+    if ($PSBoundParameters.ContainsKey("SummaryPaths")) {
+        $summaryItems = @()
+        foreach ($sp in @($SummaryPaths)) {
+            $summaryItems += ("'{0}'" -f $sp.Replace("'", "''"))
+        }
+        $summaryLiteral = if ($summaryItems.Count -gt 0) { "@({0})" -f ($summaryItems -join ", ") } else { "@()" }
+        $summaryLine = "    SummaryPaths = $summaryLiteral"
     }
-    $summaryLiteral = if ($summaryItems.Count -gt 0) { "@({0})" -f ($summaryItems -join ", ") } else { "@()" }
     $dryLine = if ($DryRun) { '`$params.DryRun = `$true' } else { '' }
 
     $launcherContent = @"
@@ -63,7 +67,7 @@ if ($OpenWindow) {
     StatusFile = '$statusEsc'
     HeartbeatSeconds = $HeartbeatSeconds
     StrictRoot = $strictLiteral
-    SummaryPaths = $summaryLiteral
+$summaryLine
 }
 $dryLine
 & '$selfEsc' @params
