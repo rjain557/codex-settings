@@ -1524,62 +1524,68 @@ function Invoke-GlobalSkillMonitored {
     $substageEntryPending = @{}
     $lastExecCommitCount = Get-CommitDeltaSinceStart
     $lastExecCodeFileCount = Get-CodeFileWorkingSetCount
+    $lastExecutePendingSnapshot = @()
+    $lastObservedPhase = $Phase
 
     while (-not $proc.HasExited) {
-        if (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatSeconds) {
-            $sub = Get-LogSubstageSnapshot -LogFile $LogFile -FallbackPhase $Phase
-            $substage = if ([string]::IsNullOrWhiteSpace([string]$sub.Substage)) { "working" } else { ([string]$sub.Substage -replace '\s+', '-').ToLowerInvariant() }
-            $runningPhase = if ([string]::IsNullOrWhiteSpace([string]$sub.Phase)) { $Phase } else { [string]$sub.Phase }
-            $currentPending = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+        $sub = Get-LogSubstageSnapshot -LogFile $LogFile -FallbackPhase $lastObservedPhase
+        $substage = if ([string]::IsNullOrWhiteSpace([string]$sub.Substage)) { "working" } else { ([string]$sub.Substage -replace '\s+', '-').ToLowerInvariant() }
+        $runningPhase = if ([string]::IsNullOrWhiteSpace([string]$sub.Phase)) { $lastObservedPhase } else { [string]$sub.Phase }
+        $lastObservedPhase = $runningPhase
+        $currentPending = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+        $substageChanged = ($trackedSubstages -contains $substage) -and ($substage -ne $activeSubstage)
 
-            if (($trackedSubstages -contains $substage) -and ($substage -ne $activeSubstage)) {
-                if (-not [string]::IsNullOrWhiteSpace($activeSubstage)) {
-                    $entryPending = @()
-                    if ($substageEntryPending.ContainsKey($activeSubstage)) {
-                        $entryPending = @($substageEntryPending[$activeSubstage])
-                    }
-
-                    $completeDoing = ("completed {0}" -f $activeSubstage)
-                    if ($activeSubstage -eq "research" -or $activeSubstage -eq "planning") {
-                        $completeDoing = ("completed {0} phases={1}" -f $activeSubstage, (Join-IntList -Values $entryPending -MaxItems 12))
-                    } elseif ($activeSubstage -eq "execute") {
-                        $codedPhases = @($entryPending | Where-Object { $currentPending -notcontains $_ } | Sort-Object -Unique)
-                        $executeSignal = Get-ExecuteCodeSignal -PreviousCommitCount $lastExecCommitCount -PreviousCodeFileCount $lastExecCodeFileCount
-                        $lastExecCommitCount = $executeSignal.CommitsNow
-                        $lastExecCodeFileCount = $executeSignal.CodeFilesNow
-                        $completeDoing = ("completed execute phases_coded={0} code_generated={1} new_commits={2} code_files={3}" -f (Join-IntList -Values $codedPhases -MaxItems 12), ($(if ($executeSignal.CodeGenerated) { "yes" } else { "no" })), $executeSignal.NewCommits, $executeSignal.CodeFilesNow)
-                        if ($codedPhases.Count -gt 0) {
-                            Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage $Stage -MapType "coded" -PhaseIds $codedPhases -LogName (Split-Path -Leaf $LogFile)
-                        }
-                    } elseif ($activeSubstage -eq "code-review") {
-                        $completeDoing = "completed code-review; generating findings summary"
-                    }
-
-                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-complete-{1}" -f $Stage, $activeSubstage) -Doing $completeDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
+        if ($substageChanged) {
+            if (-not [string]::IsNullOrWhiteSpace($activeSubstage)) {
+                $entryPending = @()
+                if ($substageEntryPending.ContainsKey($activeSubstage)) {
+                    $entryPending = @($substageEntryPending[$activeSubstage])
                 }
 
-                $activeSubstage = $substage
-                $substageEntryPending[$activeSubstage] = @($currentPending)
-
-                $enterDoing = ("entering {0}" -f $activeSubstage)
-                if ($activeSubstage -eq "research") {
-                    $enterDoing = ("entering research phases={0}" -f (Join-IntList -Values $currentPending -MaxItems 12))
-                } elseif ($activeSubstage -eq "planning") {
-                    $enterDoing = ("entering planning phases={0}" -f (Join-IntList -Values $currentPending -MaxItems 12))
+                $completeDoing = ("completed {0}" -f $activeSubstage)
+                if ($activeSubstage -eq "research" -or $activeSubstage -eq "planning") {
+                    $completeDoing = ("completed {0} phases={1}" -f $activeSubstage, (Join-IntList -Values $entryPending -MaxItems 12))
                 } elseif ($activeSubstage -eq "execute") {
-                    $enterDoing = ("entering execute phases={0}" -f (Join-IntList -Values $currentPending -MaxItems 12))
-                    if ($currentPending.Count -gt 0) {
-                        Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage $Stage -MapType "execute-target" -PhaseIds $currentPending -LogName (Split-Path -Leaf $LogFile)
+                    $codedPhases = @($entryPending | Where-Object { $currentPending -notcontains $_ } | Sort-Object -Unique)
+                    $executeSignal = Get-ExecuteCodeSignal -PreviousCommitCount $lastExecCommitCount -PreviousCodeFileCount $lastExecCodeFileCount
+                    $lastExecCommitCount = $executeSignal.CommitsNow
+                    $lastExecCodeFileCount = $executeSignal.CodeFilesNow
+                    $completeDoing = ("completed execute phases_coded={0} code_generated={1} new_commits={2} code_files={3}" -f (Join-IntList -Values $codedPhases -MaxItems 12), ($(if ($executeSignal.CodeGenerated) { "yes" } else { "no" })), $executeSignal.NewCommits, $executeSignal.CodeFilesNow)
+                    if ($codedPhases.Count -gt 0) {
+                        Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage $Stage -MapType "coded" -PhaseIds $codedPhases -LogName (Split-Path -Leaf $LogFile)
                     }
                 } elseif ($activeSubstage -eq "code-review") {
-                    $enterDoing = "entering code-review"
-                } elseif ($activeSubstage -eq "phase-synthesis") {
-                    $enterDoing = "entering phase-synthesis"
+                    $completeDoing = "completed code-review; generating findings summary"
                 }
 
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-enter-{1}" -f $Stage, $activeSubstage) -Doing $enterDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-complete-{1}" -f $Stage, $activeSubstage) -Doing $completeDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
             }
 
+            $activeSubstage = $substage
+            $substageEntryPending[$activeSubstage] = @($currentPending)
+
+            $enterDoing = ("entering {0}" -f $activeSubstage)
+            if ($activeSubstage -eq "research") {
+                $enterDoing = ("entering research phases={0}" -f (Join-IntList -Values $currentPending -MaxItems 12))
+            } elseif ($activeSubstage -eq "planning") {
+                $enterDoing = ("entering planning phases={0}" -f (Join-IntList -Values $currentPending -MaxItems 12))
+            } elseif ($activeSubstage -eq "execute") {
+                $enterDoing = ("entering execute phases={0}" -f (Join-IntList -Values $currentPending -MaxItems 12))
+                $lastExecutePendingSnapshot = @($currentPending)
+                if ($currentPending.Count -gt 0) {
+                    Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage $Stage -MapType "execute-target" -PhaseIds $currentPending -LogName (Split-Path -Leaf $LogFile)
+                }
+            } elseif ($activeSubstage -eq "code-review") {
+                $enterDoing = "entering code-review"
+            } elseif ($activeSubstage -eq "phase-synthesis") {
+                $enterDoing = "entering phase-synthesis"
+            }
+
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-enter-{1}" -f $Stage, $activeSubstage) -Doing $enterDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
+        }
+
+        $heartbeatDue = (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatSeconds)
+        if ($heartbeatDue -or $substageChanged) {
             $runningDoing = $Doing
             if (-not [string]::IsNullOrWhiteSpace([string]$sub.Hint)) {
                 $runningDoing = "{0}; {1}" -f $Doing, ([string]$sub.Hint)
@@ -1589,6 +1595,13 @@ function Invoke-GlobalSkillMonitored {
                 $executeSignal = Get-ExecuteCodeSignal -PreviousCommitCount $lastExecCommitCount -PreviousCodeFileCount $lastExecCodeFileCount
                 $lastExecCommitCount = $executeSignal.CommitsNow
                 $lastExecCodeFileCount = $executeSignal.CodeFilesNow
+
+                $codedSinceLast = @($lastExecutePendingSnapshot | Where-Object { $currentPending -notcontains $_ } | Sort-Object -Unique)
+                if ($codedSinceLast.Count -gt 0) {
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-execute-coded" -f $Stage) -Doing ("execute-coded phases={0}" -f (Join-IntList -Values $codedSinceLast -MaxItems 12)) -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
+                    Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage $Stage -MapType "coded" -PhaseIds $codedSinceLast -LogName (Split-Path -Leaf $LogFile)
+                }
+                $lastExecutePendingSnapshot = @($currentPending)
 
                 $findingRefsText = "unknown"
                 $phaseInt = 0
