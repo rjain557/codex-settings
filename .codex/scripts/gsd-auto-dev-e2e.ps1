@@ -1590,8 +1590,10 @@ function Invoke-GlobalSkillMonitored {
         [string]$Doing
     )
 
-    Write-Host "" 
-    Write-Host ("Headless command: codex exec ... ({0})" -f $Stage) -ForegroundColor DarkGray
+    if ($ProgressToConsole) {
+        Write-Host ""
+        Write-Host ("Headless command: codex exec ... ({0})" -f $Stage) -ForegroundColor DarkGray
+    }
 
     if ($DryRun) { return 0 }
 
