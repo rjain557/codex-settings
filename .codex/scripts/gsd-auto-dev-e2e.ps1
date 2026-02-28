@@ -1286,22 +1286,148 @@ function Write-PhaseFindingMapProgress {
     }
 }
 
-function Get-CodeFileWorkingSetCount {
-    $statusRes = Invoke-GitCapture -GitArgs @("status", "--porcelain") -AllowFail
-    if ($statusRes.ExitCode -ne 0) { return 0 }
+function Test-IsCodePath {
+    param([string]$PathValue)
 
-    $count = 0
+    if ([string]::IsNullOrWhiteSpace($PathValue)) { return $false }
+    return ($PathValue -match '\.(cs|csproj|sln|ts|tsx|js|jsx|sql|py|java|go|rb|php)$')
+}
+
+function Get-CodeFileWorkingSetPaths {
+    $statusRes = Invoke-GitCapture -GitArgs @("status", "--porcelain") -AllowFail
+    if ($statusRes.ExitCode -ne 0) { return @() }
+
+    $files = New-Object System.Collections.Generic.List[string]
     foreach ($row in @($statusRes.Output)) {
         $line = [string]$row
         if ($line.Length -lt 3) { continue }
+
         $path = if ($line.Length -gt 3) { $line.Substring(3).Trim() } else { "" }
         if ($path -match '\s->\s') { $path = ($path -split '\s->\s')[-1].Trim() }
-        if ($path -match '\.(cs|csproj|sln|ts|tsx|js|jsx|sql|py|java|go|rb|php)$') {
-            $count++
+        if (-not (Test-IsCodePath -PathValue $path)) { continue }
+
+        if (-not $files.Contains($path)) {
+            $files.Add($path) | Out-Null
         }
     }
 
-    return $count
+    return @($files.ToArray() | Sort-Object -Unique)
+}
+
+function Get-CodeFileWorkingSetCount {
+    return @(Get-CodeFileWorkingSetPaths).Count
+}
+
+function Get-CodeFilesChangedSinceHead {
+    param([string]$StartHead)
+
+    if ([string]::IsNullOrWhiteSpace($StartHead)) { return @() }
+
+    $diffRes = Invoke-GitCapture -GitArgs @("diff", "--name-only", "$StartHead..HEAD") -AllowFail
+    if ($diffRes.ExitCode -ne 0) { return @() }
+
+    $files = New-Object System.Collections.Generic.List[string]
+    foreach ($row in @($diffRes.Output)) {
+        $path = [string]$row
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        $path = $path.Trim()
+        if (-not (Test-IsCodePath -PathValue $path)) { continue }
+
+        if (-not $files.Contains($path)) {
+            $files.Add($path) | Out-Null
+        }
+    }
+
+    return @($files.ToArray() | Sort-Object -Unique)
+}
+
+function Get-PhaseExecutionCodeEvidence {
+    param(
+        [string]$StartHead,
+        [string[]]$BeforeWorkingSet
+    )
+
+    $before = @()
+    foreach ($item in @($BeforeWorkingSet)) {
+        $text = [string]$item
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        $before += $text.Trim()
+    }
+    $before = @($before | Sort-Object -Unique)
+
+    $after = @(Get-CodeFileWorkingSetPaths)
+    $newWorkingSet = @($after | Where-Object { $before -notcontains $_ } | Sort-Object -Unique)
+    $commitChanged = @(Get-CodeFilesChangedSinceHead -StartHead $StartHead)
+
+    $allChanged = @($newWorkingSet + $commitChanged | Sort-Object -Unique)
+
+    return [PSCustomObject]@{
+        StartHead       = $StartHead
+        WorkingSetBefore = $before
+        WorkingSetAfter = $after
+        NewWorkingSet   = $newWorkingSet
+        CommitChanged   = $commitChanged
+        ChangedCodeFiles = $allChanged
+        CodeGenerated   = ($allChanged.Count -gt 0)
+    }
+}
+
+function Get-FindingCodeEvidenceText {
+    param(
+        [string[]]$FindingRefs,
+        [string[]]$ChangedCodeFiles,
+        [int]$MaxFindings = 8,
+        [int]$MaxFiles = 3
+    )
+
+    $findings = @()
+    foreach ($item in @($FindingRefs)) {
+        $text = [string]$item
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        $findings += $text.Trim().ToUpperInvariant()
+    }
+    $findings = @($findings | Sort-Object -Unique)
+    if ($findings.Count -eq 0) { return "none" }
+
+    $filesText = Join-StringList -Values @($ChangedCodeFiles) -MaxItems $MaxFiles
+    $entries = New-Object System.Collections.Generic.List[string]
+    $limit = [Math]::Min($MaxFindings, $findings.Count)
+    for ($i = 0; $i -lt $limit; $i++) {
+        $entries.Add(("{0}=>{1}" -f $findings[$i], $filesText)) | Out-Null
+    }
+
+    if ($findings.Count -gt $limit) {
+        $entries.Add(("...(+{0})" -f ($findings.Count - $limit))) | Out-Null
+    }
+
+    return ([string]::Join(";", $entries.ToArray()))
+}
+
+function Reset-PhaseForResearchPlan {
+    param([int]$PhaseId)
+
+    $removed = New-Object System.Collections.Generic.List[string]
+    $dir = Get-PhaseDirectoryPath -PhaseId $PhaseId
+    if (-not [string]::IsNullOrWhiteSpace($dir) -and (Test-Path $dir)) {
+        $patterns = @("*RESEARCH.md", "*-PLAN.md", "*-SUMMARY.md")
+        foreach ($pattern in $patterns) {
+            $files = @(Get-ChildItem -Path $dir -File -Filter $pattern -ErrorAction SilentlyContinue)
+            foreach ($file in $files) {
+                try {
+                    Remove-Item -Path $file.FullName -Force -ErrorAction Stop
+                    $removed.Add($file.Name) | Out-Null
+                } catch { }
+            }
+        }
+    }
+
+    $reopened = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds @($PhaseId)
+
+    return [PSCustomObject]@{
+        RemovedArtifacts = @($removed.ToArray() | Sort-Object -Unique)
+        RemovedCount     = @($removed.ToArray() | Sort-Object -Unique).Count
+        Reopened         = [bool]$reopened
+    }
 }
 
 function Get-ExecuteCodeSignal {
@@ -2159,8 +2285,12 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                 Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "execute-target" -PhaseIds $executeTargets -LogName "-"
 
                 foreach ($phaseId in $executeTargets) {
+                    $findingRefsList = @(Get-PhaseFindingReferences -PhaseId $phaseId)
+                    $findingRefs = Join-StringList -Values $findingRefsList -MaxItems 8
                     $phaseCommitBefore = Get-CommitDeltaSinceStart
                     $phaseCodeFilesBefore = Get-CodeFileWorkingSetCount
+                    $phaseHeadBefore = Get-GitHeadWithRetry -RepoPath $script:ResolvedProjectRoot -AllowMissing
+                    $phaseWorkingSetBefore = @(Get-CodeFileWorkingSetPaths)
 
                     $execLog = Join-Path $script:ResolvedLogDir ("batch-execute-cycle-{0:D3}-phase-{1}-{2}.log" -f $cycle, $phaseId, $stamp)
                     $lastAutoDevLog = $execLog
@@ -2168,23 +2298,29 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                     $execExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $execLog -Stage "execute" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-execute {0}" -f $phaseId)
 
                     $signal = Get-ExecuteCodeSignal -PreviousCommitCount $phaseCommitBefore -PreviousCodeFileCount $phaseCodeFilesBefore
+                    $codeEvidence = Get-PhaseExecutionCodeEvidence -StartHead $phaseHeadBefore -BeforeWorkingSet $phaseWorkingSetBefore
+                    $changedFilesText = Join-StringList -Values @($codeEvidence.ChangedCodeFiles) -MaxItems 8
+                    $codedFindingsText = if ($codeEvidence.CodeGenerated) { $findingRefs } else { "none" }
+                    $uncodedFindingsText = if ($codeEvidence.CodeGenerated) { "none" } else { $findingRefs }
+                    $findingCodeEvidence = Get-FindingCodeEvidenceText -FindingRefs $findingRefsList -ChangedCodeFiles @($codeEvidence.ChangedCodeFiles)
+
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-finding-remediation-check" -Doing ("phase {0} remediation-check findings={1} coded_findings={2} uncoded_findings={3} code_files_changed={4} finding_code_evidence={5} new_commits={6} code_files_total={7}" -f $phaseId, $findingRefs, $codedFindingsText, $uncodedFindingsText, $changedFilesText, $findingCodeEvidence, $signal.NewCommits, $signal.CodeFilesNow) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+
                     $pendingNow = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
                     $phaseCompleted = ($pendingNow -notcontains $phaseId)
 
-                    if ($phaseCompleted -and -not $signal.CodeGenerated) {
-                        $reopened = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds @($phaseId)
-                        if ($reopened) {
-                            $phaseCompleted = $false
-                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reopen-no-code" -Doing ("phase {0} reopened because execute produced no code evidence (new_commits={1}, code_files={2})" -f $phaseId, $signal.NewCommits, $signal.CodeFilesNow) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
-                        }
+                    if (-not $codeEvidence.CodeGenerated) {
+                        $reset = Reset-PhaseForResearchPlan -PhaseId $phaseId
+                        $phaseCompleted = $false
+                        $removedText = Join-StringList -Values @($reset.RemovedArtifacts) -MaxItems 8
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reset-research-plan" -Doing ("phase {0} reset for rework: no coding evidence for findings={1}; removed_artifacts={2}; reopened={3}; requeue_path=research->plan->execute(next-cycle)" -f $phaseId, $findingRefs, $removedText, $reset.Reopened) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
                     }
 
-                    $findingRefs = Join-StringList -Values @(Get-PhaseFindingReferences -PhaseId $phaseId) -MaxItems 8
                     if ($phaseCompleted) {
-                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute complete; marking phase complete code_generated={1} new_commits={2} code_files={3} findings={4}" -f $phaseId, $(if ($signal.CodeGenerated) { "yes" } else { "no" }), $signal.NewCommits, $signal.CodeFilesNow, $findingRefs) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute complete; marking phase complete code_generated=yes new_commits={1} code_files={2} code_files_changed={3} findings={4} finding_code_evidence={5}" -f $phaseId, $signal.NewCommits, $signal.CodeFilesNow, $changedFilesText, $findingRefs, $findingCodeEvidence) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
                         Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds @($phaseId) -LogName (Split-Path -Leaf $execLog) -Force
                     } else {
-                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute incomplete; remains pending code_generated={1} new_commits={2} code_files={3} findings={4}" -f $phaseId, $(if ($signal.CodeGenerated) { "yes" } else { "no" }), $signal.NewCommits, $signal.CodeFilesNow, $findingRefs) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute incomplete; remains pending code_generated={1} new_commits={2} code_files={3} code_files_changed={4} findings={5} uncoded_findings={6}" -f $phaseId, $(if ($codeEvidence.CodeGenerated) { "yes" } else { "no" }), $signal.NewCommits, $signal.CodeFilesNow, $changedFilesText, $findingRefs, $uncodedFindingsText) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
                     }
                 }
 
