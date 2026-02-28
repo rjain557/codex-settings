@@ -16,6 +16,7 @@ param(
     [string]$StatusFile = ".planning/agent-output/gsd-e2e-status.log",
     [int]$HeartbeatSeconds = 60,
     [switch]$ProgressToConsole = $false,
+    [switch]$AllowRun = $false,
     [switch]$OpenWindow,
     [switch]$AllowOpenWindow = $false,
     [switch]$DryRun
@@ -30,6 +31,11 @@ $script:LastReviewFindingKeys = @()
 $script:LastPhaseMapByKey = @{}
 $script:InstanceMutex = $null
 $script:InstanceMutexName = ""
+
+if (-not $AllowRun) {
+    Write-Host "Auto-dev execution blocked. Pass -AllowRun to explicitly permit running." -ForegroundColor Yellow
+    return
+}
 
 function Get-CurrentProcessId {
     return [System.Diagnostics.Process]::GetCurrentProcess().Id
@@ -148,6 +154,7 @@ if ($OpenWindow) {
     $reviewRootEsc = $ReviewRootRelative.Replace("'", "''")
     $strictLiteral = if ($StrictRoot) { '$true' } else { '$false' }
     $progressToConsoleLiteral = if ($ProgressToConsole) { '$true' } else { '$false' }
+    $allowRunLiteral = if ($AllowRun) { '$true' } else { '$false' }
     $summaryLine = ""
     if ($PSBoundParameters.ContainsKey("SummaryPaths")) {
         $summaryItems = @()
@@ -172,6 +179,7 @@ if ($OpenWindow) {
     HeartbeatSeconds = $HeartbeatSeconds
     StrictRoot = $strictLiteral
     ProgressToConsole = $progressToConsoleLiteral
+    AllowRun = $allowRunLiteral
 $summaryLine
 }
 $dryLine
