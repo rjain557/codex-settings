@@ -988,8 +988,8 @@ Execution contract:
   2) parallel multi-agent planning for all pending phases needing plans,
   3) sequential execution of phases in deterministic roadmap order.
 - Review artifact root for this run: `{4}`.
-- During `$gsd-sdlc-review`, run detailed review with parallel multi-agent fan-out for layers/gates, then aggregate deterministically.
-- During `$gsd-sdlc-review`, you MUST run a fresh deep code review against current code (frontend/backend/database/auth/agent) with security + dead-code + contract analysis against latest Figma + spec/docs.
+- During `$gsd-code-review`, run detailed review with parallel multi-agent fan-out for layers/gates, then aggregate deterministically.
+- During `$gsd-code-review`, you MUST run a fresh deep code review against current code (frontend/backend/database/auth/agent) with security + dead-code + contract analysis against latest Figma + spec/docs.
 - Forbidden: manually patching `{4}/EXECUTIVE-SUMMARY.md` to reset or force `Health`, `Code Review Totals`, or `Deep Review Totals`.
 - Forbidden: any `Deep Review Totals: STATUS=INGESTED` sourced from `{4}/EXECUTIVE-SUMMARY.md`.
 - Require fresh `{4}/layers/code-review-summary.json` from this run with `lineTraceability.status=PASSED`.
@@ -1015,11 +1015,11 @@ Execution contract:
 $autoDevPrompt = [string]::Format($autoDevPromptTemplate, $autoDevCommand, $script:ResolvedProjectRoot, $RoadmapPath, $StatePath, $script:ReviewRootRelativeEffective)
 
 $confirmPromptTemplate = @'
-$gsd-sdlc-review
+$gsd-code-review
 
 Confirmation contract:
 - No code changes between clean-candidate pass and this confirmation pass.
-- Re-run full deep `$gsd-sdlc-review` on current HEAD (do not reuse or summarize prior artifacts only).
+- Re-run full deep `$gsd-code-review` on current HEAD (do not reuse or summarize prior artifacts only).
 - Required scope: deep multi-agent security/dead-code/contract analysis across code files versus latest Figma + docs/spec.
 - Review artifact root for this run: `{0}`.
 - Forbidden: manual edits that force `Health`, `Code Review Totals`, or `Deep Review Totals`.

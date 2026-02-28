@@ -1,6 +1,6 @@
 ---
 name: gsd-auto-dev
-description: Codex-native autonomous SDLC remediation loop. In write mode, process pending phases with parallel research/planning fan-out, sequential phase execution, deterministic SDLC review each cycle, then require final line-level code-completeness confirmation via gsd-sdlc-finalreview before success.
+description: Codex-native autonomous SDLC remediation loop. In write mode, process pending phases with parallel research/planning fan-out, sequential phase execution, deterministic code review each cycle, then require final line-level code-completeness confirmation via gsd-sdlc-finalreview before success.
 ---
 
 # Purpose
@@ -14,7 +14,7 @@ The text after `$gsd-auto-dev` is parsed as arguments.
 Supported arguments:
 - `--max-cycles <n>`: Maximum remediation cycles (default `20`).
 - `--parallelism <n>`: Max concurrent agents for research/plan/review fan-out (default `4`).
-- `--layer=frontend|backend|database|auth`: Optional review scope forwarded to `$gsd-sdlc-review`.
+- `--layer=frontend|backend|database|auth`: Optional review scope forwarded to `$gsd-code-review`.
 - `--phase=<n>`: Optional phase filter. Only process this phase if pending.
 - `--stop-on-failure`: Stop immediately when a phase stage fails.
 - `--write` or `--read-only`: Execution mode. Default is `--write`.
@@ -32,7 +32,7 @@ Artifact root selection:
 1. Preflight
 - Require `.planning/ROADMAP.md` and `.planning/STATE.md`.
 - Require `docs/review/` to be writable in write mode.
-- Require companion skills: `$gsd-batch-research`, `$gsd-batch-plan`, `$gsd-batch-execute`, `$gsd-sdlc-review`, `$gsd-sdlc-finalreview`.
+- Require companion skills: `$gsd-batch-research`, `$gsd-batch-plan`, `$gsd-batch-execute`, `$gsd-code-review`, `$gsd-sdlc-finalreview`.
 - Resolve review-summary candidates before cycle start:
   - `docs/review/EXECUTIVE-SUMMARY.md` under `.` and `./tech-web-chatai.2` (when present).
   - If no candidate summary exists after first review run, treat as failure.
@@ -73,7 +73,7 @@ Artifact root selection:
     - Otherwise, record failure and continue to next executable phase.
 
 5. Re-review after phase execution
-- Run `$gsd-sdlc-review` (pass `--layer` when provided).
+- Run `$gsd-code-review` (pass `--layer` when provided).
 - Require fresh deep review artifacts from current run:
   - `docs/review/layers/code-review-summary.json` regenerated in this cycle,
   - `lineTraceability.status=PASSED`,
@@ -138,8 +138,8 @@ Artifact root selection:
     - `drift_total=0`,
     - `pending_remediation=0`,
   - finalreview confirm-only pass reports unchanged commit SHA and identical summary hash,
-- final confirmation `$gsd-sdlc-review` still reports `100/100` and drift total `0` after no execution work in between.
-- final confirmation `$gsd-sdlc-review` must be a full rerun (not artifact-only confirmation) and must refresh deep review artifacts.
+- final confirmation `$gsd-code-review` still reports `100/100` and drift total `0` after no execution work in between.
+- final confirmation `$gsd-code-review` must be a full rerun (not artifact-only confirmation) and must refresh deep review artifacts.
 - Limit: `cycle > max_cycles`.
 - Never trigger stuck guard while any non-clean signal exists (`health<100`, `drift>0`, `unmapped>0`, runtime gate failures/unverified, deep-review invalid/unparsable, or any findings > 0).
 - Stuck guard is allowed only when no phase execution occurred, no new remediation phases were created, and all non-clean signals are already resolved.
@@ -167,10 +167,10 @@ Summarize and reference:
 
 # Guardrails
 - Always run in write mode by default for auto-dev.
-- Always run `$gsd-sdlc-review` after remediation work in each cycle.
+- Always run `$gsd-code-review` after remediation work in each cycle.
 - Do not accept cycle clean-state if deep review evidence is stale, ingested-only, or missing line-traceability PASS.
 - Always run `$gsd-sdlc-finalreview` before declaring success.
-- Do not substitute `$gsd-code-review` for `$gsd-sdlc-review` in this skill.
+- Do not fall back to `$gsd-sdlc-review` for per-cycle review in this skill.
 - Do not skip research/planning gates before execution.
 - Do not execute phases in parallel; execution remains strictly sequential and deterministic.
 - Parallelism is allowed only for research/planning fan-out and must preserve deterministic phase ordering in result aggregation.

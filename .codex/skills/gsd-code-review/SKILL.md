@@ -1,6 +1,6 @@
 ---
 name: gsd-code-review
-description: Run comprehensive multi-agent code review with auto-detection for web apps, APIs, databases, MCP servers, mobile apps, browser extensions, and remote agents Use when the user asks for 'gsd:code-review', 'gsd-code-review', or equivalent trigger phrases.
+description: Run comprehensive multi-agent code review with auto-detection for web apps, APIs, databases, MCP servers, mobile apps, browser extensions, and remote agents. Use when the user asks for 'gsd:code-review', 'gsd-code-review', or equivalent trigger phrases.
 ---
 
 # Purpose
@@ -8,19 +8,21 @@ Run a comprehensive, dev-handoff-quality code review by auto-detecting project c
 
 Covers all project types: Web Frontend, Backend API (.NET/Node/Python/Go), Database (SQL/Mongo), Auth/SSO, MCP Server, Mobile App (React Native), Browser Extension (Manifest V3), Remote Agent.
 
-Output: docs/review/ folder with executive summary, full report, developer handoff, and prioritized tasks.
+Output: `docs/review/` folder with executive summary, full report, developer handoff, and prioritized tasks.
 
 # When to use
-Use when the user requests the original gsd:code-review flow (for example: $gsd-code-review).
-Also use on natural-language requests that match this behavior: Run comprehensive multi-agent code review with auto-detection for web apps, APIs, databases, MCP servers, mobile apps, browser extensions, and remote agents
+Use when the user requests the original `gsd:code-review` flow (for example: `$gsd-code-review`).
+Also use on natural-language requests that match this behavior.
 
 # Inputs
-The user's text after invoking $gsd-code-review is the arguments. Parse it into required fields; if any required field is missing, ask targeted follow-up questions.
-Expected argument shape from source: [--layer=frontend|backend|database|auth|mcp|mobile|extension|agent] [--skip-build].
+The user's text after invoking `$gsd-code-review` is the arguments. Parse it into required fields; if any required field is missing, ask targeted follow-up questions.
+
+Expected argument shape from source: `[--layer=frontend|backend|database|auth|mcp|mobile|extension|agent] [--skip-build]`.
+
 Context from source:
 ```text
 Options: <parsed-arguments>
-- (no flags): Full review â€” auto-detect all components, full traceability + contract analysis
+- (no flags): Full review - auto-detect all components, full traceability + contract analysis
 - --layer=frontend: Frontend layer only
 - --layer=backend: Backend layer only
 - --layer=database: Database layer only
@@ -31,8 +33,8 @@ Options: <parsed-arguments>
 - --layer=agent: Remote agent only
 - --skip-build: Skip build verification step (faster, but misses build blockers)
 
-@.planning/STATE.md (if exists â€” project context)
-@.planning/ROADMAP.md (if exists â€” phase context)
+@.planning/STATE.md (if exists - project context)
+@.planning/ROADMAP.md (if exists - phase context)
 ```
 
 # Workflow
@@ -40,6 +42,7 @@ Load and follow these referenced artifacts first:
 - @C:/Users/rjain/.claude/get-shit-done/workflows/code-review.md
 - @C:/Users/rjain/.claude/agents/gsd-code-reviewer.md
 - @C:/Users/rjain/.claude/get-shit-done/references/ui-brand.md
+
 Then execute this process:
 ```text
 ## 1. Parse Options
@@ -76,9 +79,9 @@ Follow the workflow steps in order:
 - Wait for all to complete, collect summary counts
 
 ### Wave 2: Cross-Cutting Analysis (parallel agents, full review only)
-- Traceability Matrix Builder â†’ `docs/review/TRACEABILITY-MATRIX.md`
-- Contract Alignment Checker â†’ `docs/review/CONTRACT-ALIGNMENT.md`
-- Dead Code Analyzer â†’ `docs/review/DEAD-CODE.md`
+- Traceability Matrix Builder -> `docs/review/TRACEABILITY-MATRIX.md`
+- Contract Alignment Checker -> `docs/review/CONTRACT-ALIGNMENT.md`
+- Dead Code Analyzer -> `docs/review/DEAD-CODE.md`
 - Wait for all to complete
 
 ### Wave 3: Build Verification (mandatory unless --skip-build)
@@ -90,17 +93,17 @@ Follow the workflow steps in order:
 - Read all findings from sub-agent output files
 - Calculate health score (100 - penalties per severity)
 - Generate 4 reports:
-  1. `docs/review/EXECUTIVE-SUMMARY.md` â€” Health score, top risks
-  2. `docs/review/FULL-REPORT.md` â€” All findings by severity
-  3. `docs/review/DEVELOPER-HANDOFF.md` â€” Actionable tasks
-  4. `docs/review/PRIORITIZED-TASKS.md` â€” Ordered list for $gsd-plan-phase
+  1. `docs/review/EXECUTIVE-SUMMARY.md` - Health score, top risks
+  2. `docs/review/FULL-REPORT.md` - All findings by severity
+  3. `docs/review/DEVELOPER-HANDOFF.md` - Actionable tasks
+  4. `docs/review/PRIORITIZED-TASKS.md` - Ordered list for `$gsd-plan-phase`
 
 ## 4. Present Results
 
 Display executive summary:
 
 ```
-Code Review Complete â€” Health: {score}/100 (Grade: {grade})
+Code Review Complete - Health: {score}/100 (Grade: {grade})
 
 Components: {N} reviewed
 Findings: {B} Blocker | {H} High | {M} Medium | {L} Low

@@ -674,7 +674,7 @@ function Invoke-SequentialExecution {
 
 function Invoke-FullReview {
     param([int]$Iteration)
-    return Invoke-CodexWithTimeout -Prompt "/gsd:sdlc-review" -TimeoutMinutes $ReviewTimeout -Label "sdlc-review-iter-$Iteration" -Model $ReviewModel -ReasoningEffort $ReviewReasoningEffort
+    return Invoke-CodexWithTimeout -Prompt "/gsd:code-review" -TimeoutMinutes $ReviewTimeout -Label "code-review-iter-$Iteration" -Model $ReviewModel -ReasoningEffort $ReviewReasoningEffort
 }
 
  $script:CodexExe = Resolve-CodexCommand
