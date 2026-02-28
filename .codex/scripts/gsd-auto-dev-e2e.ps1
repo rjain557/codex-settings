@@ -83,12 +83,37 @@ $dryLine
     }
 
     function Get-LatestStatusLine {
-        param([string]$Path)
+        param(
+            [string]$Path,
+            [datetime]$NotBefore
+        )
 
         if (-not (Test-Path $Path)) { return $null }
         $lines = @(Get-Content -Path $Path -Tail 500 -ErrorAction SilentlyContinue)
         for ($i = $lines.Count - 1; $i -ge 0; $i--) {
             $line = [string]$lines[$i]
+            if ($line -notmatch '\bcycle=\d+\b' -and $line -notmatch '\bFINAL\b') {
+                continue
+            }
+
+            $ts = $null
+            $tsMatch = [regex]::Match($line, '^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]')
+            if ($tsMatch.Success) {
+                try {
+                    $ts = [datetime]::ParseExact(
+                        $tsMatch.Groups[1].Value,
+                        "yyyy-MM-dd HH:mm:ss",
+                        [System.Globalization.CultureInfo]::InvariantCulture
+                    )
+                } catch {
+                    $ts = $null
+                }
+            }
+
+            if ($ts -and $ts -lt $NotBefore.AddSeconds(-5)) {
+                continue
+            }
+
             if ($line -match '\bcycle=\d+\b' -or $line -match '\bFINAL\b') {
                 return $line.Trim()
             }
@@ -98,6 +123,7 @@ $dryLine
     }
 
     $monitorIntervalSeconds = [Math]::Max(1, [int]$HeartbeatSeconds)
+    $monitorStartAt = Get-Date
     $lastMonitorAt = (Get-Date).AddSeconds(-1 * $monitorIntervalSeconds)
 
     Write-Host ("Launched gsd-auto-dev-e2e in a new PowerShell window (PID={0})." -f $proc.Id) -ForegroundColor Green
@@ -105,7 +131,7 @@ $dryLine
 
     while (-not $proc.HasExited) {
         if (((Get-Date) - $lastMonitorAt).TotalSeconds -ge $monitorIntervalSeconds) {
-            $latest = Get-LatestStatusLine -Path $resolvedStatusPath
+            $latest = Get-LatestStatusLine -Path $resolvedStatusPath -NotBefore $monitorStartAt
             if ([string]::IsNullOrWhiteSpace($latest)) {
                 Write-Host ("[{0}] monitor waiting for status updates..." -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss")) -ForegroundColor DarkCyan
             } else {
@@ -117,7 +143,7 @@ $dryLine
         Start-Sleep -Seconds 2
     }
 
-    $finalStatus = Get-LatestStatusLine -Path $resolvedStatusPath
+    $finalStatus = Get-LatestStatusLine -Path $resolvedStatusPath -NotBefore $monitorStartAt
     if ([string]::IsNullOrWhiteSpace($finalStatus)) {
         Write-Host ("Worker finished (PID={0}, exit={1}). No status line found." -f $proc.Id, $proc.ExitCode) -ForegroundColor Yellow
     } else {
