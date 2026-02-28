@@ -1031,10 +1031,10 @@ Confirmation contract:
 $confirmPrompt = [string]::Format($confirmPromptTemplate, $script:ReviewRootRelativeEffective)
 
 $phaseSynthesisPromptTemplate = @'
-$gsd-sdlc-review
+$gsd-code-review
 
 Remediation phase synthesis contract:
-- Run a fresh `$gsd-sdlc-review` for the current code at review root `{0}`.
+- Run a fresh `$gsd-code-review` for the current code at review root `{0}`.
 - If health is below `100/100`, deterministic drift is non-zero, unmapped findings are non-zero, deep review is invalid/unparsable, or any findings exist, you MUST create new unchecked remediation phases in `{1}` and matching actionable `*-PLAN.md` files under `.planning/phases`.
 - Do not stop with stuck-guard when findings exist and pending phase count is zero.
 - Update `{2}` with newly created phase ids and next action.
