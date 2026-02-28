@@ -24,8 +24,101 @@ $ErrorActionPreference = "Stop"
 
 $script:LastReviewProgressSignature = ""
 $script:RunnerStartTime = $null
+$script:LastReviewFindingKeys = @()
+$script:LastPhaseMapByKey = @{}
+$script:InstanceMutex = $null
+$script:InstanceMutexName = ""
+
+function Get-CurrentProcessId {
+    return [System.Diagnostics.Process]::GetCurrentProcess().Id
+}
+
+function Get-ExistingAutoDevWorkerProcesses {
+    $selfPid = Get-CurrentProcessId
+    $rows = @()
+
+    try {
+        $rows = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+            $_.ProcessId -ne $selfPid -and
+            $_.Name -match '^powershell(\.exe)?$' -and
+            (
+                $_.CommandLine -match 'run-gsd-e2e-' -or
+                $_.CommandLine -match 'gsd-auto-dev-e2e\.ps1'
+            )
+        })
+    } catch {
+        $rows = @()
+    }
+
+    return @($rows)
+}
+
+function Get-SingleInstanceMutexName {
+    param([string]$ProjectRootValue)
+
+    $key = if ([string]::IsNullOrWhiteSpace($ProjectRootValue)) { "." } else { $ProjectRootValue }
+    try {
+        $key = [System.IO.Path]::GetFullPath($key)
+    } catch { }
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($key.ToLowerInvariant())
+    $sha1 = [System.Security.Cryptography.SHA1]::Create()
+    try {
+        $hash = $sha1.ComputeHash($bytes)
+    } finally {
+        $sha1.Dispose()
+    }
+
+    $hex = -join ($hash | ForEach-Object { $_.ToString("x2") })
+    return ("Global\GsdAutoDevE2E_{0}" -f $hex)
+}
+
+function Acquire-SingleInstanceGuard {
+    param([string]$ProjectRootValue)
+
+    $name = Get-SingleInstanceMutexName -ProjectRootValue $ProjectRootValue
+    $script:InstanceMutexName = $name
+
+    $created = $false
+    $mutex = $null
+    try {
+        $mutex = New-Object System.Threading.Mutex($false, $name, [ref]$created)
+    } catch {
+        return $false
+    }
+
+    $acquired = $false
+    try {
+        $acquired = $mutex.WaitOne(0, $false)
+    } catch {
+        $acquired = $false
+    }
+
+    if (-not $acquired) {
+        try { $mutex.Dispose() } catch { }
+        return $false
+    }
+
+    $script:InstanceMutex = $mutex
+    return $true
+}
+
+function Release-SingleInstanceGuard {
+    if ($script:InstanceMutex) {
+        try { $script:InstanceMutex.ReleaseMutex() } catch { }
+        try { $script:InstanceMutex.Dispose() } catch { }
+        $script:InstanceMutex = $null
+    }
+}
 
 if ($OpenWindow) {
+    $existingWorkers = @(Get-ExistingAutoDevWorkerProcesses)
+    if ($existingWorkers.Count -gt 0) {
+        $ids = @($existingWorkers | Select-Object -ExpandProperty ProcessId)
+        Write-Host ("Existing auto-dev worker already running. Skipping new launch. PID(s): {0}" -f ($ids -join ",")) -ForegroundColor Yellow
+        return
+    }
+
     $selfPath = $MyInvocation.MyCommand.Path
     if (-not (Test-Path $selfPath)) {
         throw "Cannot relaunch: script path not found ($selfPath)."
@@ -81,6 +174,17 @@ $dryLine
     $proc = Start-Process -FilePath "powershell.exe" -ArgumentList $argList -WindowStyle Normal -PassThru
     Write-Host ("Launched gsd-auto-dev-e2e in a new PowerShell window (PID={0})." -f $proc.Id) -ForegroundColor Green
     return
+}
+
+if (-not (Acquire-SingleInstanceGuard -ProjectRootValue $ProjectRoot)) {
+    $running = @(Get-ExistingAutoDevWorkerProcesses | Select-Object -ExpandProperty ProcessId)
+    $pidText = if ($running.Count -gt 0) { ($running -join ",") } else { "unknown" }
+    Write-Host ("Another auto-dev worker is already active for this repo lock ({0}). Refusing to start. Existing PID(s): {1}" -f $script:InstanceMutexName, $pidText) -ForegroundColor Yellow
+    return
+}
+
+$null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
+    Release-SingleInstanceGuard
 }
 
 function Resolve-CodexCommand {
@@ -796,6 +900,169 @@ function Get-AllPhases {
     return @($phases | Sort-Object -Unique)
 }
 
+function Join-StringList {
+    param(
+        [string[]]$Values,
+        [int]$MaxItems = 8
+    )
+
+    $items = @()
+    foreach ($v in @($Values)) {
+        $text = [string]$v
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        $items += $text.Trim()
+    }
+
+    $items = @($items | Sort-Object -Unique)
+    if ($items.Count -eq 0) { return "none" }
+    if ($MaxItems -lt 1 -or $items.Count -le $MaxItems) { return ($items -join ",") }
+
+    $shown = @($items[0..($MaxItems - 1)])
+    return ("{0}...(+{1})" -f ($shown -join ","), ($items.Count - $MaxItems))
+}
+
+function Get-PendingPhasesText {
+    param([int]$MaxItems = 12)
+    $pending = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+    return (Join-IntList -Values $pending -MaxItems $MaxItems)
+}
+
+function Get-PhaseDirectoryPath {
+    param([int]$PhaseId)
+
+    $phaseRoot = Join-Path $script:ResolvedProjectRoot ".planning\phases"
+    if (-not (Test-Path $phaseRoot)) { return $null }
+
+    $pattern = "^[0]*{0}-" -f [regex]::Escape([string]$PhaseId)
+    $candidates = @(Get-ChildItem -Path $phaseRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match $pattern } | Sort-Object Name)
+    if ($candidates.Count -eq 0) { return $null }
+    return $candidates[0].FullName
+}
+
+function Get-FindingRefsFromText {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return @() }
+
+    $results = New-Object System.Collections.Generic.List[string]
+    $patterns = @(
+        '(?im)\b([A-Z][A-Z0-9]+(?:-[A-Z0-9]+){2,})\b',
+        '(?im)\b(FINDING[-_ #]*\d{1,5})\b'
+    )
+
+    foreach ($pattern in $patterns) {
+        $matches = [regex]::Matches($Text, $pattern)
+        foreach ($m in $matches) {
+            if (-not $m.Success -or $m.Groups.Count -lt 2) { continue }
+            $value = [string]$m.Groups[1].Value
+            if ([string]::IsNullOrWhiteSpace($value)) { continue }
+            $value = ($value -replace '\s+', '-' -replace '_', '-').ToUpperInvariant()
+            if ($value.Length -gt 84) { continue }
+            if ($value -match '^(PHASE|ROADMAP|STATE|DOCS|REVIEW|LAYER)-') { continue }
+            if (-not $results.Contains($value)) {
+                $results.Add($value) | Out-Null
+            }
+        }
+    }
+
+    return $results.ToArray()
+}
+
+function Get-PhaseFindingReferences {
+    param([int]$PhaseId)
+
+    $dir = Get-PhaseDirectoryPath -PhaseId $PhaseId
+    if ([string]::IsNullOrWhiteSpace($dir) -or -not (Test-Path $dir)) { return @() }
+
+    $files = @()
+    $files += @(Get-ChildItem -Path $dir -File -Filter "*-PLAN.md" -ErrorAction SilentlyContinue)
+    $files += @(Get-ChildItem -Path $dir -File -Filter "*RESEARCH.md" -ErrorAction SilentlyContinue)
+    $files += @(Get-ChildItem -Path $dir -File -Filter "*-SUMMARY.md" -ErrorAction SilentlyContinue)
+    $files = @($files | Sort-Object FullName -Unique)
+
+    $refs = New-Object System.Collections.Generic.List[string]
+    foreach ($f in $files) {
+        $text = ""
+        try { $text = Get-Content -Raw -Path $f.FullName -ErrorAction Stop } catch { $text = "" }
+        foreach ($item in @(Get-FindingRefsFromText -Text $text)) {
+            if (-not $refs.Contains($item)) {
+                $refs.Add($item) | Out-Null
+            }
+        }
+    }
+
+    return @($refs.ToArray() | Sort-Object -Unique)
+}
+
+function Write-PhaseFindingMapProgress {
+    param(
+        [string]$StatusPath,
+        [int]$Cycle,
+        [string]$Stage,
+        [string]$MapType,
+        [int[]]$PhaseIds,
+        [string]$LogName,
+        [switch]$Force
+    )
+
+    $phases = @($PhaseIds | Sort-Object -Unique)
+    if ($phases.Count -eq 0) { return }
+
+    foreach ($phase in $phases) {
+        $refs = @(Get-PhaseFindingReferences -PhaseId $phase)
+        $refsText = Join-StringList -Values $refs -MaxItems 8
+
+        $sigKey = "{0}|{1}|{2}" -f $Stage, $MapType, $phase
+        if ((-not $Force) -and $script:LastPhaseMapByKey.ContainsKey($sigKey) -and [string]$script:LastPhaseMapByKey[$sigKey] -eq $refsText) {
+            continue
+        }
+        $script:LastPhaseMapByKey[$sigKey] = $refsText
+
+        $doing = "phase-finding-map type=$MapType phase=$phase mapped_findings=$refsText"
+        Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage ("{0}-phase-map-{1}" -f $Stage, $MapType) -Doing $doing -Phase ([string]$phase) -IsRunning $false -LogName $LogName
+    }
+}
+
+function Get-CodeFileWorkingSetCount {
+    $statusRes = Invoke-GitCapture -GitArgs @("status", "--porcelain") -AllowFail
+    if ($statusRes.ExitCode -ne 0) { return 0 }
+
+    $count = 0
+    foreach ($row in @($statusRes.Output)) {
+        $line = [string]$row
+        if ($line.Length -lt 3) { continue }
+        $path = if ($line.Length -gt 3) { $line.Substring(3).Trim() } else { "" }
+        if ($path -match '\s->\s') { $path = ($path -split '\s->\s')[-1].Trim() }
+        if ($path -match '\.(cs|csproj|sln|ts|tsx|js|jsx|sql|py|java|go|rb|php)$') {
+            $count++
+        }
+    }
+
+    return $count
+}
+
+function Get-ExecuteCodeSignal {
+    param(
+        [int]$PreviousCommitCount,
+        [int]$PreviousCodeFileCount
+    )
+
+    $commitsNow = Get-CommitDeltaSinceStart
+    $codeFilesNow = Get-CodeFileWorkingSetCount
+
+    $newCommits = $commitsNow - $PreviousCommitCount
+    $codeFileDelta = $codeFilesNow - $PreviousCodeFileCount
+    $codeGenerated = ($newCommits -gt 0 -or $codeFilesNow -gt 0 -or $codeFileDelta -gt 0)
+
+    return [PSCustomObject]@{
+        CommitsNow      = $commitsNow
+        CodeFilesNow    = $codeFilesNow
+        NewCommits      = $newCommits
+        CodeFileDelta   = $codeFileDelta
+        CodeGenerated   = $codeGenerated
+    }
+}
+
 function Join-IntList {
     param(
         [int[]]$Values,
@@ -938,6 +1205,7 @@ function Get-CodeReviewSnapshot {
             High            = $null
             Medium          = $null
             Low             = $null
+            FindingKeys     = @()
             LineTraceStatus = "UNAVAILABLE"
             ParseError      = $true
         }
@@ -951,6 +1219,7 @@ function Get-CodeReviewSnapshot {
     $high = $null
     $medium = $null
     $low = $null
+    $findingKeys = New-Object System.Collections.Generic.List[string]
 
     if (($json.PSObject.Properties.Name -contains "deepReview") -and $json.deepReview) {
         if ($json.deepReview.PSObject.Properties.Name -contains "status") {
@@ -994,6 +1263,31 @@ function Get-CodeReviewSnapshot {
         }
     }
 
+    if (($json.PSObject.Properties.Name -contains "findings") -and $json.findings) {
+        foreach ($finding in @($json.findings)) {
+            if (-not $finding) { continue }
+            $id = ""
+            $severity = ""
+            $title = ""
+            $evidence = ""
+
+            if ($finding.PSObject.Properties.Name -contains "id") { $id = [string]$finding.id }
+            if ($finding.PSObject.Properties.Name -contains "severity") { $severity = [string]$finding.severity }
+            if ($finding.PSObject.Properties.Name -contains "title") { $title = [string]$finding.title }
+            if ($finding.PSObject.Properties.Name -contains "evidence") { $evidence = [string]$finding.evidence }
+
+            $key = if (-not [string]::IsNullOrWhiteSpace($id)) {
+                $id.Trim().ToUpperInvariant()
+            } else {
+                ("{0}|{1}|{2}" -f $severity.Trim().ToUpperInvariant(), $title.Trim().ToUpperInvariant(), $evidence.Trim().ToUpperInvariant())
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($key) -and -not $findingKeys.Contains($key)) {
+                $findingKeys.Add($key) | Out-Null
+            }
+        }
+    }
+
     $generatedText = ""
     if ($json.PSObject.Properties.Name -contains "generatedUtc") {
         $generatedText = [string]$json.generatedUtc
@@ -1021,6 +1315,7 @@ function Get-CodeReviewSnapshot {
         High            = $high
         Medium          = $medium
         Low             = $low
+        FindingKeys     = $findingKeys.ToArray()
         LineTraceStatus = $lineTraceStatus
         ParseError      = $false
     }
@@ -1055,13 +1350,36 @@ function Write-CodeReviewProgress {
     $freshText = if ($review.FreshEnough) { "fresh" } else { "stale" }
     $generatedText = if ($review.GeneratedUtc) { $review.GeneratedUtc.ToString("yyyy-MM-ddTHH:mm:ssZ") } else { "unknown" }
 
-    $signature = "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}" -f $generatedText, $healthText, $driftText, $unmappedText, $deepStatusText, $deepHealthText, $findingsText, $lineTraceText
+    $currentKeys = @()
+    if ($review.PSObject.Properties.Name -contains "FindingKeys") {
+        $currentKeys = @($review.FindingKeys | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+    }
+    $previousKeys = @($script:LastReviewFindingKeys | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Sort-Object -Unique)
+
+    $resolvedKeys = @($previousKeys | Where-Object { $currentKeys -notcontains $_ } | Sort-Object -Unique)
+    $newKeys = @($currentKeys | Where-Object { $previousKeys -notcontains $_ } | Sort-Object -Unique)
+    $baseline = if ($previousKeys.Count -gt 0) { "available" } else { "initial" }
+    $resolvedText = Join-StringList -Values $resolvedKeys -MaxItems 6
+    $newText = Join-StringList -Values $newKeys -MaxItems 6
+
+    $resolvedConfirm = if ($baseline -eq "initial") {
+        "baseline-pending"
+    } elseif ($resolvedKeys.Count -gt 0 -and $newKeys.Count -eq 0) {
+        "yes"
+    } elseif ($newKeys.Count -gt 0) {
+        "partial"
+    } else {
+        "no-change"
+    }
+
+    $signature = "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}|{8}|{9}" -f $generatedText, $healthText, $driftText, $unmappedText, $deepStatusText, $deepHealthText, $findingsText, $lineTraceText, ($resolvedKeys.Count), ($newKeys.Count)
     if ((-not $Force) -and $signature -eq $script:LastReviewProgressSignature) {
         return
     }
     $script:LastReviewProgressSignature = $signature
+    $script:LastReviewFindingKeys = @($currentKeys)
 
-    $doing = "code-review summary health=$healthText drift=$driftText unmapped=$unmappedText deep_status=$deepStatusText deep_health=$deepHealthText findings=$findingsText line_trace=$lineTraceText generated_utc=$generatedText freshness=$freshText"
+    $doing = "code-review summary health=$healthText drift=$driftText unmapped=$unmappedText deep_status=$deepStatusText deep_health=$deepHealthText findings=$findingsText line_trace=$lineTraceText generated_utc=$generatedText freshness=$freshText baseline=$baseline resolved_count=$($resolvedKeys.Count) new_count=$($newKeys.Count) previous_findings_resolved=$resolvedConfirm resolved_ids=$resolvedText new_ids=$newText"
     Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage ("{0}-review-summary" -f $Stage) -Doing $doing -Phase $Phase -IsRunning $false -LogName $LogName
 }
 
@@ -1104,6 +1422,16 @@ function Write-PhaseWaveProgress {
         (Get-DeltaText -Name "unmapped_delta" -Before $(if ($BeforeMetric) { $BeforeMetric.Unmapped } else { $null }) -After $(if ($AfterMetric) { $AfterMetric.Unmapped } else { $null }))
 
     Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage ("{0}-phase-wave" -f $Stage) -Doing $doing -Phase $Phase -IsRunning $false -LogName $LogName
+
+    if ($created.Count -gt 0) {
+        Write-PhaseFindingMapProgress -StatusPath $StatusPath -Cycle $Cycle -Stage $Stage -MapType "created" -PhaseIds $created -LogName $LogName
+    }
+    if ($newPending.Count -gt 0) {
+        Write-PhaseFindingMapProgress -StatusPath $StatusPath -Cycle $Cycle -Stage $Stage -MapType "assigned" -PhaseIds $newPending -LogName $LogName
+    }
+    if ($completedNow.Count -gt 0) {
+        Write-PhaseFindingMapProgress -StatusPath $StatusPath -Cycle $Cycle -Stage $Stage -MapType "completed" -PhaseIds $completedNow -LogName $LogName
+    }
 }
 
 function Write-ProgressUpdate {
@@ -1186,15 +1514,84 @@ function Invoke-GlobalSkillMonitored {
     }
 
     $lastHeartbeat = (Get-Date).AddSeconds(-1 * [math]::Max(1, $HeartbeatSeconds))
+    $trackedSubstages = @("research", "planning", "execute", "code-review", "phase-synthesis")
+    $activeSubstage = ""
+    $substageEntryPending = @{}
+    $lastExecCommitCount = Get-CommitDeltaSinceStart
+    $lastExecCodeFileCount = Get-CodeFileWorkingSetCount
 
     while (-not $proc.HasExited) {
         if (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatSeconds) {
             $sub = Get-LogSubstageSnapshot -LogFile $LogFile -FallbackPhase $Phase
             $substage = if ([string]::IsNullOrWhiteSpace([string]$sub.Substage)) { "working" } else { ([string]$sub.Substage -replace '\s+', '-').ToLowerInvariant() }
             $runningPhase = if ([string]::IsNullOrWhiteSpace([string]$sub.Phase)) { $Phase } else { [string]$sub.Phase }
+            $currentPending = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+
+            if (($trackedSubstages -contains $substage) -and ($substage -ne $activeSubstage)) {
+                if (-not [string]::IsNullOrWhiteSpace($activeSubstage)) {
+                    $entryPending = @()
+                    if ($substageEntryPending.ContainsKey($activeSubstage)) {
+                        $entryPending = @($substageEntryPending[$activeSubstage])
+                    }
+
+                    $completeDoing = ("completed {0}" -f $activeSubstage)
+                    if ($activeSubstage -eq "research" -or $activeSubstage -eq "planning") {
+                        $completeDoing = ("completed {0} phases={1}" -f $activeSubstage, (Join-IntList -Values $entryPending -MaxItems 12))
+                    } elseif ($activeSubstage -eq "execute") {
+                        $codedPhases = @($entryPending | Where-Object { $currentPending -notcontains $_ } | Sort-Object -Unique)
+                        $executeSignal = Get-ExecuteCodeSignal -PreviousCommitCount $lastExecCommitCount -PreviousCodeFileCount $lastExecCodeFileCount
+                        $lastExecCommitCount = $executeSignal.CommitsNow
+                        $lastExecCodeFileCount = $executeSignal.CodeFilesNow
+                        $completeDoing = ("completed execute phases_coded={0} code_generated={1} new_commits={2} code_files={3}" -f (Join-IntList -Values $codedPhases -MaxItems 12), ($(if ($executeSignal.CodeGenerated) { "yes" } else { "no" })), $executeSignal.NewCommits, $executeSignal.CodeFilesNow)
+                        if ($codedPhases.Count -gt 0) {
+                            Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage $Stage -MapType "coded" -PhaseIds $codedPhases -LogName (Split-Path -Leaf $LogFile)
+                        }
+                    } elseif ($activeSubstage -eq "code-review") {
+                        $completeDoing = "completed code-review; generating findings summary"
+                    }
+
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-complete-{1}" -f $Stage, $activeSubstage) -Doing $completeDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
+                }
+
+                $activeSubstage = $substage
+                $substageEntryPending[$activeSubstage] = @($currentPending)
+
+                $enterDoing = ("entering {0}" -f $activeSubstage)
+                if ($activeSubstage -eq "research") {
+                    $enterDoing = ("entering research phases={0}" -f (Join-IntList -Values $currentPending -MaxItems 12))
+                } elseif ($activeSubstage -eq "planning") {
+                    $enterDoing = ("entering planning phases={0}" -f (Join-IntList -Values $currentPending -MaxItems 12))
+                } elseif ($activeSubstage -eq "execute") {
+                    $enterDoing = ("entering execute phases={0}" -f (Join-IntList -Values $currentPending -MaxItems 12))
+                    if ($currentPending.Count -gt 0) {
+                        Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage $Stage -MapType "execute-target" -PhaseIds $currentPending -LogName (Split-Path -Leaf $LogFile)
+                    }
+                } elseif ($activeSubstage -eq "code-review") {
+                    $enterDoing = "entering code-review"
+                } elseif ($activeSubstage -eq "phase-synthesis") {
+                    $enterDoing = "entering phase-synthesis"
+                }
+
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-enter-{1}" -f $Stage, $activeSubstage) -Doing $enterDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
+            }
+
             $runningDoing = $Doing
             if (-not [string]::IsNullOrWhiteSpace([string]$sub.Hint)) {
                 $runningDoing = "{0}; {1}" -f $Doing, ([string]$sub.Hint)
+            }
+
+            if ($substage -eq "execute") {
+                $executeSignal = Get-ExecuteCodeSignal -PreviousCommitCount $lastExecCommitCount -PreviousCodeFileCount $lastExecCodeFileCount
+                $lastExecCommitCount = $executeSignal.CommitsNow
+                $lastExecCodeFileCount = $executeSignal.CodeFilesNow
+
+                $findingRefsText = "unknown"
+                $phaseInt = 0
+                if ([int]::TryParse([string]$runningPhase, [ref]$phaseInt)) {
+                    $findingRefsText = Join-StringList -Values @(Get-PhaseFindingReferences -PhaseId $phaseInt) -MaxItems 6
+                }
+
+                $runningDoing = "{0}; execute-progress code_generated={1} new_commits={2} code_files={3} finding_refs={4}" -f $runningDoing, ($(if ($executeSignal.CodeGenerated) { "yes" } else { "no" })), $executeSignal.NewCommits, $executeSignal.CodeFilesNow, $findingRefsText
             }
 
             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-running-{1}" -f $Stage, $substage) -Doing $runningDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
@@ -1209,6 +1606,10 @@ function Invoke-GlobalSkillMonitored {
 
     if (Test-Path $errFile) {
         Get-Content -Path $errFile | Add-Content -Path $LogFile
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($activeSubstage)) {
+        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-complete-{1}" -f $Stage, $activeSubstage) -Doing ("completed {0}" -f $activeSubstage) -Phase $Phase -IsRunning $false -LogName (Split-Path -Leaf $LogFile)
     }
 
     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-exit-{1}" -f $Stage, $exitCode) -Doing $Doing -Phase $Phase -IsRunning $false -LogName (Split-Path -Leaf $LogFile)
@@ -1365,6 +1766,11 @@ Execution contract:
 - Mandatory progress update every heartbeat interval (configured by `HeartbeatSeconds`) including:
   - what script is currently doing
   - current substage (`research`, `planning`, `execute`, `code-review`, or `phase-synthesis`)
+  - when research starts/completes, include exact phase ids researched
+  - when planning starts/completes, include exact phase ids planned
+  - during execute heartbeats, include explicit code generation signal (`code_generated=yes/no`) and finding ids currently being remediated
+  - when code-review starts/completes, include summary (health/drift/unmapped/finding totals) and resolved-vs-new finding ids
+  - when phases are created/assigned from findings, include phase->finding mapping lines for every affected phase
   - current phase counts (completed, in progress, pending)
   - target metrics (health=100, drift=0, unmapped=0)
   - current metrics (health, drift, unmapped)
@@ -1431,6 +1837,9 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
         Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Doing "evaluating clean-candidate gates" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
         Write-PhaseWaveProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Phase $phaseText -LogName (Split-Path -Leaf $autoDevLog) -BeforePending $pendingBefore -AfterPending $pendingAfter -BeforeAll $allPhasesBefore -AfterAll $allPhasesAfter -BeforeMetric $metricBefore -AfterMetric $metric
         Write-CodeReviewProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Phase $phaseText -LogName (Split-Path -Leaf $autoDevLog) -NotBeforeUtc $cycleStartUtc
+        if ($pendingAfter.Count -gt 0) {
+            Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -MapType "pending" -PhaseIds $pendingAfter -LogName (Split-Path -Leaf $autoDevLog)
+        }
         if (-not $deepReviewEvidence.Ok) {
             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-auto-dev-deep-review-invalid" -Doing ("deep-review evidence invalid: {0}" -f $deepReviewEvidence.Reason) -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
         }
@@ -1468,6 +1877,9 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Doing "re-evaluated metrics after forced phase synthesis" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
             Write-PhaseWaveProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Phase "-" -LogName (Split-Path -Leaf $synthLog) -BeforePending $synthPendingBefore -AfterPending $pendingAfter -BeforeAll $synthAllBefore -AfterAll $allPhasesAfter -BeforeMetric $synthMetricBefore -AfterMetric $metric
             Write-CodeReviewProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Phase "-" -LogName (Split-Path -Leaf $synthLog) -NotBeforeUtc $cycleStartUtc
+            if ($pendingAfter.Count -gt 0) {
+                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -MapType "pending" -PhaseIds $pendingAfter -LogName (Split-Path -Leaf $synthLog)
+            }
             if (-not $deepReviewEvidence.Ok) {
                 Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-phase-synthesis-deep-review-invalid" -Doing ("deep-review evidence still invalid: {0}" -f $deepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
             }
@@ -1507,6 +1919,9 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
 
         Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -Doing ("final confirmation analyzed; no_code_changes={0}" -f $noCodeChanges) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
         Write-CodeReviewProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -Phase "-" -LogName (Split-Path -Leaf $confirmLog) -NotBeforeUtc $confirmStartUtc -Force
+        if ($pendingConfirm.Count -gt 0) {
+            Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -MapType "pending" -PhaseIds $pendingConfirm -LogName (Split-Path -Leaf $confirmLog)
+        }
         if (-not $confirmDeepReviewEvidence.Ok) {
             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-final-confirm-deep-review-invalid" -Doing ("confirmation deep-review evidence invalid: {0}" -f $confirmDeepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
         }
@@ -1629,8 +2044,10 @@ Write-Host ("Last confirm log:     {0}" -f $lastConfirmLog) -ForegroundColor Dar
 Write-Host ("Status log:           {0}" -f $script:ResolvedStatusPath) -ForegroundColor DarkGray
 Write-Host ("Key artifacts:        {0}" -f ($script:ResolvedSummaryPaths -join '; ')) -ForegroundColor DarkGray
 
+$exitCodeFinal = 2
 if ($finalMetric -and $stopReason -eq "clean-confirmed") {
-    exit 0
+    $exitCodeFinal = 0
 }
 
-exit 2
+Release-SingleInstanceGuard
+exit $exitCodeFinal
