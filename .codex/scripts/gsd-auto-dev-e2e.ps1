@@ -17,6 +17,7 @@ param(
     [int]$HeartbeatSeconds = 60,
     [switch]$ProgressToConsole = $false,
     [switch]$OpenWindow,
+    [switch]$AllowOpenWindow = $false,
     [switch]$DryRun
 )
 
@@ -113,6 +114,11 @@ function Release-SingleInstanceGuard {
 }
 
 if ($OpenWindow) {
+    if (-not $AllowOpenWindow) {
+        Write-Host "OpenWindow launch blocked. Pass -AllowOpenWindow to explicitly permit opening a worker window." -ForegroundColor Yellow
+        return
+    }
+
     $existingWorkers = @(Get-ExistingAutoDevWorkerProcesses)
     if ($existingWorkers.Count -gt 0) {
         $ids = @($existingWorkers | Select-Object -ExpandProperty ProcessId)
