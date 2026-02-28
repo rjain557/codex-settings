@@ -856,6 +856,168 @@ function Ensure-GitPushSynced {
     return [PSCustomObject]@{ Ok = $false; Status = "push-max-attempts-exceeded"; Detail = $detail }
 }
 
+function Convert-ToCommitLabel {
+    param(
+        [string]$Text,
+        [int]$MaxLength = 88
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return "" }
+
+    $label = [string]$Text
+    $label = $label -replace '[\r\n\t]+', ' '
+    $label = $label -replace '\s+', ' '
+    $label = $label -replace '[`"]', ''
+    $label = $label.Trim()
+    $label = $label -replace '^[\s\-\|:;,.]+', ''
+    $label = $label -replace '[\s\-\|:;,.]+$', ''
+
+    if ($label.Length -gt $MaxLength) {
+        $label = $label.Substring(0, $MaxLength).Trim()
+        $label = $label -replace '[\s\-\|:;,.]+$', ''
+    }
+
+    return $label
+}
+
+function Get-PreviousExecutiveSummaryContext {
+    param([string[]]$SummaryPaths)
+
+    foreach ($summaryPath in @($SummaryPaths)) {
+        if (-not (Test-Path $summaryPath)) { continue }
+
+        $lines = @()
+        try { $lines = @(Get-Content -Path $summaryPath -ErrorAction Stop) } catch { $lines = @() }
+        if ($lines.Count -eq 0) { continue }
+
+        $rawLabel = ""
+        foreach ($line in $lines) {
+            $text = [string]$line
+            $m = [regex]::Match($text, '^\s*Summary\s*:\s*(.+?)\s*$')
+            if ($m.Success) {
+                $rawLabel = [string]$m.Groups[1].Value.Trim()
+                break
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($rawLabel)) {
+            foreach ($line in $lines) {
+                $text = [string]$line
+                if ([string]::IsNullOrWhiteSpace($text)) { continue }
+                if ($text -match '^\s*#') { continue }
+                $rawLabel = $text.Trim()
+                break
+            }
+        }
+
+        $label = Convert-ToCommitLabel -Text $rawLabel
+        if (-not [string]::IsNullOrWhiteSpace($label)) {
+            return [PSCustomObject]@{
+                Path  = $summaryPath
+                Raw   = $rawLabel
+                Label = $label
+            }
+        }
+    }
+
+    return [PSCustomObject]@{
+        Path  = "unavailable"
+        Raw   = ""
+        Label = "review-summary-unavailable"
+    }
+}
+
+function Invoke-PreReviewCommitPush {
+    param(
+        [string]$StatusPath,
+        [int]$Cycle,
+        [string]$LogName
+    )
+
+    $summaryCtx = Get-PreviousExecutiveSummaryContext -SummaryPaths $script:ResolvedSummaryPaths
+    $summaryLabel = [string]$summaryCtx.Label
+    if ([string]::IsNullOrWhiteSpace($summaryLabel)) {
+        $summaryLabel = "review-summary-unavailable"
+    }
+
+    $summarySource = [string]$summaryCtx.Path
+    if ([string]::IsNullOrWhiteSpace($summarySource)) {
+        $summarySource = "unavailable"
+    }
+
+    $commitMessage = "auto-dev pre-review: $summaryLabel"
+    $commitMessage = Convert-ToCommitLabel -Text $commitMessage -MaxLength 120
+    if ([string]::IsNullOrWhiteSpace($commitMessage)) {
+        $commitMessage = "auto-dev pre-review"
+    }
+
+    Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage "pre-review-commit-enter" -Doing ("pre-review commit check summary_label='{0}' summary_source={1}" -f $summaryLabel, $summarySource) -Phase "-" -IsRunning $false -LogName $LogName
+
+    if ($DryRun) {
+        Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage "pre-review-commit-dry-run" -Doing ("dry-run skip pre-review commit message='{0}'" -f $commitMessage) -Phase "-" -IsRunning $false -LogName $LogName
+        return [PSCustomObject]@{ Ok = $true; Status = "dry-run"; CommitMessage = $commitMessage; CommitSha = "" }
+    }
+
+    $statusRes = Invoke-GitCapture -GitArgs @("status", "--porcelain") -AllowFail
+    if ($statusRes.ExitCode -ne 0) {
+        $detail = (@($statusRes.Output) -join " ")
+        Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage "pre-review-commit-failed" -Doing ("git status failed before pre-review commit detail='{0}'" -f $detail) -Phase "-" -IsRunning $false -LogName $LogName
+        return [PSCustomObject]@{ Ok = $false; Status = "git-status-failed"; Detail = $detail; CommitMessage = $commitMessage; CommitSha = "" }
+    }
+
+    if (@($statusRes.Output).Count -eq 0) {
+        Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage "pre-review-commit-skip" -Doing "no code updates detected before code-review; skipping commit" -Phase "-" -IsRunning $false -LogName $LogName
+        return [PSCustomObject]@{ Ok = $true; Status = "no-changes"; CommitMessage = $commitMessage; CommitSha = "" }
+    }
+
+    $addRes = Invoke-GitCapture -GitArgs @("add", "-A") -AllowFail
+    if ($addRes.ExitCode -ne 0) {
+        $detail = (@($addRes.Output) -join " ")
+        Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage "pre-review-commit-failed" -Doing ("git add failed before code-review detail='{0}'" -f $detail) -Phase "-" -IsRunning $false -LogName $LogName
+        return [PSCustomObject]@{ Ok = $false; Status = "git-add-failed"; Detail = $detail; CommitMessage = $commitMessage; CommitSha = "" }
+    }
+
+    $stagedRes = Invoke-GitCapture -GitArgs @("diff", "--cached", "--name-only") -AllowFail
+    if ($stagedRes.ExitCode -ne 0) {
+        $detail = (@($stagedRes.Output) -join " ")
+        Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage "pre-review-commit-failed" -Doing ("git diff --cached failed detail='{0}'" -f $detail) -Phase "-" -IsRunning $false -LogName $LogName
+        return [PSCustomObject]@{ Ok = $false; Status = "git-diff-cached-failed"; Detail = $detail; CommitMessage = $commitMessage; CommitSha = "" }
+    }
+
+    if (@($stagedRes.Output).Count -eq 0) {
+        Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage "pre-review-commit-skip" -Doing "no staged changes after git add; skipping commit" -Phase "-" -IsRunning $false -LogName $LogName
+        return [PSCustomObject]@{ Ok = $true; Status = "no-staged-changes"; CommitMessage = $commitMessage; CommitSha = "" }
+    }
+
+    $commitRes = Invoke-GitCapture -GitArgs @("commit", "-m", $commitMessage) -AllowFail
+    if ($commitRes.ExitCode -ne 0) {
+        $commitText = (@($commitRes.Output) -join " ")
+        if ($commitText -match 'nothing to commit') {
+            Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage "pre-review-commit-skip" -Doing "nothing to commit before code-review" -Phase "-" -IsRunning $false -LogName $LogName
+            return [PSCustomObject]@{ Ok = $true; Status = "nothing-to-commit"; CommitMessage = $commitMessage; CommitSha = "" }
+        }
+
+        Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage "pre-review-commit-failed" -Doing ("git commit failed before code-review detail='{0}'" -f $commitText) -Phase "-" -IsRunning $false -LogName $LogName
+        return [PSCustomObject]@{ Ok = $false; Status = "git-commit-failed"; Detail = $commitText; CommitMessage = $commitMessage; CommitSha = "" }
+    }
+
+    $headRes = Invoke-GitCapture -GitArgs @("rev-parse", "HEAD") -AllowFail
+    $commitSha = ""
+    if ($headRes.ExitCode -eq 0) {
+        $commitSha = Get-FirstShaFromOutput -Output $headRes.Output -Length 40
+    }
+    $shortSha = if ([string]::IsNullOrWhiteSpace($commitSha)) { "unknown" } else { $commitSha.Substring(0, [Math]::Min(7, $commitSha.Length)) }
+
+    $pushRes = Ensure-GitPushSynced -StatusPath $StatusPath -Cycle $Cycle -Stage "pre-review-commit"
+    if (-not $pushRes.Ok) {
+        Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage ("pre-review-commit-{0}" -f $pushRes.Status) -Doing "pre-review commit created but push failed" -Phase "-" -IsRunning $false -LogName $LogName
+        return [PSCustomObject]@{ Ok = $false; Status = ("push-{0}" -f $pushRes.Status); Detail = $pushRes.Detail; CommitMessage = $commitMessage; CommitSha = $commitSha }
+    }
+
+    Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage "pre-review-commit-done" -Doing ("pre-review updates committed/pushed sha={0} message='{1}'" -f $shortSha, $commitMessage) -Phase "-" -IsRunning $false -LogName $LogName
+    return [PSCustomObject]@{ Ok = $true; Status = "committed"; CommitMessage = $commitMessage; CommitSha = $commitSha }
+}
+
 function Get-CommitDeltaSinceStart {
     if (-not $script:StartHeads -or $script:StartHeads.Count -eq 0) { return 0 }
 
@@ -2039,6 +2201,13 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
         Write-PhaseWaveProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-stage-wave" -Phase $phaseText -LogName "-" -BeforePending $pendingBefore -AfterPending $pendingAfter -BeforeAll $allPhasesBefore -AfterAll $allPhasesAfter -BeforeMetric $metricBefore -AfterMetric $metric
 
         if ($pendingAfter.Count -eq 0) {
+            $preReviewCommit = Invoke-PreReviewCommitPush -StatusPath $script:ResolvedStatusPath -Cycle $cycle -LogName "-"
+            if (-not $preReviewCommit.Ok) {
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "stop-pre-review-commit-failed" -Doing "stopping after pre-review commit/push failure" -Phase "-" -IsRunning $false -LogName "-"
+                $stopReason = "pre-review-commit-failed"
+                break
+            }
+
             $reviewLog = Join-Path $script:ResolvedLogDir ("code-review-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
             $lastConfirmLog = $reviewLog
             $reviewPrompt = New-GsdSkillPrompt -CommandLine '$gsd-code-review' -Purpose "run code review after all phases are complete"
