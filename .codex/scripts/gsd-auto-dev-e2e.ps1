@@ -15,6 +15,7 @@ param(
     [string]$LogDir = ".planning/agent-output",
     [string]$StatusFile = ".planning/agent-output/gsd-e2e-status.log",
     [int]$HeartbeatSeconds = 60,
+    [int]$PreflightMaxSeconds = 180,
     [switch]$ProgressToConsole = $false,
     [switch]$AllowRun = $false,
     [switch]$OpenWindow,
@@ -177,6 +178,7 @@ if ($OpenWindow) {
     LogDir = '$logDirEsc'
     StatusFile = '$statusEsc'
     HeartbeatSeconds = $HeartbeatSeconds
+    PreflightMaxSeconds = $PreflightMaxSeconds
     StrictRoot = $strictLiteral
     ProgressToConsole = $progressToConsoleLiteral
     AllowRun = $allowRunLiteral
@@ -1540,6 +1542,9 @@ function Invoke-GlobalSkillMonitored {
     $lastExecCodeFileCount = Get-CodeFileWorkingSetCount
     $lastExecutePendingSnapshot = @()
     $lastObservedPhase = $Phase
+    $monitorStart = Get-Date
+    $trackedSubstageSeen = $false
+    $forcedExitCode = $null
 
     while (-not $proc.HasExited) {
         $sub = Get-LogSubstageSnapshot -LogFile $LogFile -FallbackPhase $lastObservedPhase
@@ -1576,6 +1581,7 @@ function Invoke-GlobalSkillMonitored {
             }
 
             $activeSubstage = $substage
+            $trackedSubstageSeen = $true
             $substageEntryPending[$activeSubstage] = @($currentPending)
 
             $enterDoing = ("entering {0}" -f $activeSubstage)
@@ -1630,11 +1636,49 @@ function Invoke-GlobalSkillMonitored {
             $lastHeartbeat = Get-Date
         }
 
+        if (-not $trackedSubstageSeen) {
+            $preflightElapsedSeconds = ((Get-Date) - $monitorStart).TotalSeconds
+            if ($preflightElapsedSeconds -ge [math]::Max(30, $PreflightMaxSeconds)) {
+                $hintText = if ([string]::IsNullOrWhiteSpace([string]$sub.Hint)) { "none" } else { ([string]$sub.Hint -replace '[\r\n]+', ' ') }
+                $stallDoing = ("stalled preflight no_stage_transition={0}s substage={1} hint={2}; stopping and retrying next cycle" -f [int][math]::Round($preflightElapsedSeconds), $substage, $hintText)
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-stalled-preflight" -f $Stage) -Doing $stallDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
+
+                try {
+                    $childPids = @()
+                    try {
+                        $childPids = @(Get-CimInstance Win32_Process -Filter ("ParentProcessId = {0}" -f $proc.Id) -ErrorAction Stop | Select-Object -ExpandProperty ProcessId)
+                    } catch {
+                        $childPids = @()
+                    }
+
+                    foreach ($childPid in $childPids) {
+                        try { Stop-Process -Id $childPid -Force -ErrorAction Stop } catch { }
+                    }
+
+                    try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch { }
+                } catch { }
+
+                $forcedExitCode = 124
+                break
+            }
+        }
+
         Start-Sleep -Seconds 2
     }
 
-    $null = $proc.WaitForExit()
-    $exitCode = if ($null -eq $proc.ExitCode) { -1 } else { [int]$proc.ExitCode }
+    if ($null -ne $forcedExitCode) {
+        try { $null = $proc.WaitForExit(5000) } catch { }
+    } else {
+        $null = $proc.WaitForExit()
+    }
+
+    $exitCode = if ($null -ne $forcedExitCode) {
+        [int]$forcedExitCode
+    } elseif ($null -eq $proc.ExitCode) {
+        -1
+    } else {
+        [int]$proc.ExitCode
+    }
 
     if (Test-Path $errFile) {
         Get-Content -Path $errFile | Add-Content -Path $LogFile
@@ -1754,6 +1798,7 @@ Write-Host ("Strict root:           {0}" -f $StrictRoot) -ForegroundColor White
 Write-Host ("Max outer loops:       {0}" -f $MaxOuterLoops) -ForegroundColor White
 Write-Host ("Auto-dev max cycles:   {0}" -f $AutoDevMaxCycles) -ForegroundColor White
 Write-Host ("Heartbeat (seconds):   {0}" -f $HeartbeatSeconds) -ForegroundColor White
+Write-Host ("Preflight max (sec):   {0}" -f $PreflightMaxSeconds) -ForegroundColor White
 Write-Host ("Status log:            {0}" -f $script:ResolvedStatusPath) -ForegroundColor DarkGray
 Write-Host ("Target metrics:        Health=100, Drift=0, Unmapped=0") -ForegroundColor White
 
@@ -1789,6 +1834,9 @@ Execution contract:
 - For scripted operations, prefer explicit PowerShell path:
   - `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "<...>"`
 - Avoid complex nested quoting in `cmd.exe /c` one-liners; split work into simpler commands.
+- Preflight budget is strict: enter the first workflow stage within 90 seconds and no more than 15 shell probes.
+- Do not loop environment/tool checks (for example repeated `find/findstr/rg/where` diagnostics). If a probe fails, use a direct PowerShell fallback and continue.
+- After initial root validation, immediately dispatch stage work (research/planning/execute) from roadmap + phase artifacts.
 - Strict root must remain enforced with:
   - project root `{1}`
   - roadmap path `{2}`
