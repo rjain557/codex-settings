@@ -2078,6 +2078,117 @@ function Invoke-GlobalSkillMonitored {
     return $exitCode
 }
 
+function Invoke-GlobalSkillParallelPhaseBatch {
+    param(
+        [string]$Stage,
+        [int]$Cycle,
+        [int]$Pass,
+        [int[]]$PhaseIds,
+        [string]$CommandLineTemplate,
+        [string]$PurposeTemplate
+    )
+
+    $targets = @($PhaseIds | Sort-Object -Unique)
+    if ($targets.Count -eq 0) {
+        return [PSCustomObject]@{
+            LastLogFile = ""
+            ExitMap     = @{}
+        }
+    }
+
+    $stageSafe = if ([string]::IsNullOrWhiteSpace($Stage)) { "stage" } else { ($Stage -replace '[^a-zA-Z0-9_-]', '_').ToLowerInvariant() }
+    $batchStamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+    $workers = New-Object System.Collections.Generic.List[object]
+    $exitMap = @{}
+
+    foreach ($phaseId in $targets) {
+        $commandLine = [string]::Format($CommandLineTemplate, $phaseId)
+        $purpose = [string]::Format($PurposeTemplate, $phaseId)
+        $prompt = New-GsdSkillPrompt -CommandLine $commandLine -Purpose $purpose
+
+        $logFile = Join-Path $script:ResolvedLogDir ("batch-{0}-cycle-{1:D3}-pass-{2:D2}-phase-{3}-{4}.log" -f $stageSafe, $Cycle, $Pass, $phaseId, $batchStamp)
+        $promptFile = Join-Path $script:ResolvedLogDir ("{0}-cycle-{1:D3}-pass-{2:D2}-phase-{3}-{4}.prompt.txt" -f $stageSafe, $Cycle, $Pass, $phaseId, $batchStamp)
+        $errFile = $logFile + ".stderr"
+
+        if ($DryRun) {
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-phase-exit-0" -f $Stage) -Doing ("{0} phase={1} complete pass={2}" -f $stageSafe, $phaseId, $Pass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $logFile)
+            $exitMap[[string]$phaseId] = 0
+            continue
+        }
+
+        Set-Content -Path $promptFile -Value $prompt -NoNewline -Encoding UTF8
+
+        $proc = $null
+        if ($script:UseWslCodex) {
+            $promptFileWsl = Convert-WindowsPathToWsl -PathValue $promptFile
+            $projectRootWsl = Convert-WindowsPathToWsl -PathValue $script:ResolvedProjectRoot
+            if ([string]::IsNullOrWhiteSpace($promptFileWsl) -or [string]::IsNullOrWhiteSpace($projectRootWsl)) {
+                throw "Unable to convert prompt/project path to WSL path for parallel $Stage execution."
+            }
+
+            $wslCmd = 'cat "$1" | "$2" exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$3"'
+            $proc = Start-Process -FilePath "wsl.exe" -ArgumentList @("bash", "-lc", $wslCmd, "gsd-auto-dev", $promptFileWsl, $script:WslCodexPath, $projectRootWsl) -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardOutput $logFile -RedirectStandardError $errFile
+        } else {
+            $cmd = "type `"{0}`" | `"{1}`" exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd ." -f $promptFile, $script:CodexExe
+            $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardOutput $logFile -RedirectStandardError $errFile
+        }
+
+        $workers.Add([PSCustomObject]@{
+            PhaseId   = [int]$phaseId
+            Process   = $proc
+            LogFile   = $logFile
+            ErrFile   = $errFile
+            Completed = $false
+            ExitCode  = $null
+        }) | Out-Null
+    }
+
+    $lastHeartbeat = (Get-Date).AddSeconds(-1 * [math]::Max(1, $HeartbeatSeconds))
+    while (@($workers | Where-Object { -not $_.Completed }).Count -gt 0) {
+        $runningPhases = New-Object System.Collections.Generic.List[int]
+
+        foreach ($worker in $workers) {
+            if ($worker.Completed) { continue }
+
+            if ($worker.Process.HasExited) {
+                try { $null = $worker.Process.WaitForExit() } catch { }
+                $exitCode = if ($null -eq $worker.Process.ExitCode) { -1 } else { [int]$worker.Process.ExitCode }
+                $worker.Completed = $true
+                $worker.ExitCode = $exitCode
+                $exitMap[[string]$worker.PhaseId] = $exitCode
+
+                if (Test-Path $worker.ErrFile) {
+                    try { Get-Content -Path $worker.ErrFile | Add-Content -Path $worker.LogFile } catch { }
+                }
+
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-phase-exit-{1}" -f $Stage, $exitCode) -Doing ("{0} phase={1} complete pass={2}" -f $stageSafe, $worker.PhaseId, $Pass) -Phase ([string]$worker.PhaseId) -IsRunning $false -LogName (Split-Path -Leaf $worker.LogFile)
+            } else {
+                $runningPhases.Add([int]$worker.PhaseId) | Out-Null
+            }
+        }
+
+        $heartbeatDue = (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatSeconds)
+        if ($heartbeatDue) {
+            $runningList = Join-IntList -Values @($runningPhases.ToArray()) -MaxItems 20
+            $runningPhase = if ($runningPhases.Count -gt 0) { [string]$runningPhases[0] } else { "-" }
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-parallel-running" -f $Stage) -Doing ("parallel {0} running phases={1} pass={2}" -f $stageSafe, $runningList, $Pass) -Phase $runningPhase -IsRunning $true -LogName "-"
+            $lastHeartbeat = Get-Date
+        }
+
+        Start-Sleep -Seconds 2
+    }
+
+    $lastLogFile = ""
+    if ($workers.Count -gt 0) {
+        $lastLogFile = [string]$workers[$workers.Count - 1].LogFile
+    }
+
+    return [PSCustomObject]@{
+        LastLogFile = $lastLogFile
+        ExitMap     = $exitMap
+    }
+}
+
 function New-GsdSkillPrompt {
     param(
         [string]$CommandLine,
@@ -2258,12 +2369,9 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                 if ($researchTargets.Count -gt 0) {
                     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-enter" -Doing ("entering research phases={0} pass={1}" -f (Join-IntList -Values $researchTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $true -LogName "-"
                     Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research" -MapType "research-target" -PhaseIds $researchTargets -LogName "-"
-                    foreach ($phaseId in $researchTargets) {
-                        $researchLog = Join-Path $script:ResolvedLogDir ("batch-research-cycle-{0:D3}-pass-{1:D2}-phase-{2}-{3}.log" -f $cycle, $phasePass, $phaseId, $stamp)
-                        $lastAutoDevLog = $researchLog
-                        $prompt = New-GsdSkillPrompt -CommandLine ("`$gsd-batch-research {0}" -f $phaseId) -Purpose ("research phase {0}" -f $phaseId)
-                        $researchExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $researchLog -Stage "research" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-research {0}" -f $phaseId)
-                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("research-phase-exit-{0}" -f $researchExit) -Doing ("research phase={0} complete pass={1}" -f $phaseId, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $researchLog)
+                    $researchBatch = Invoke-GlobalSkillParallelPhaseBatch -Stage "research" -Cycle $cycle -Pass $phasePass -PhaseIds $researchTargets -CommandLineTemplate "`$gsd-batch-research {0}" -PurposeTemplate "research phase {0}"
+                    if (-not [string]::IsNullOrWhiteSpace([string]$researchBatch.LastLogFile)) {
+                        $lastAutoDevLog = [string]$researchBatch.LastLogFile
                     }
                     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-complete" -Doing ("completed research phases={0} pass={1}" -f (Join-IntList -Values $researchTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
                 } else {
@@ -2275,12 +2383,9 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                 if ($planTargets.Count -gt 0) {
                     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-enter" -Doing ("entering planning phases={0} pass={1}" -f (Join-IntList -Values $planTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $true -LogName "-"
                     Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning" -MapType "planning-target" -PhaseIds $planTargets -LogName "-"
-                    foreach ($phaseId in $planTargets) {
-                        $planLog = Join-Path $script:ResolvedLogDir ("batch-plan-cycle-{0:D3}-pass-{1:D2}-phase-{2}-{3}.log" -f $cycle, $phasePass, $phaseId, $stamp)
-                        $lastAutoDevLog = $planLog
-                        $prompt = New-GsdSkillPrompt -CommandLine ("`$gsd-batch-plan {0}" -f $phaseId) -Purpose ("plan phase {0}" -f $phaseId)
-                        $planExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $planLog -Stage "planning" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-plan {0}" -f $phaseId)
-                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("planning-phase-exit-{0}" -f $planExit) -Doing ("planning phase={0} complete pass={1}" -f $phaseId, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $planLog)
+                    $planBatch = Invoke-GlobalSkillParallelPhaseBatch -Stage "planning" -Cycle $cycle -Pass $phasePass -PhaseIds $planTargets -CommandLineTemplate "`$gsd-batch-plan {0}" -PurposeTemplate "plan phase {0}"
+                    if (-not [string]::IsNullOrWhiteSpace([string]$planBatch.LastLogFile)) {
+                        $lastAutoDevLog = [string]$planBatch.LastLogFile
                     }
                     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-complete" -Doing ("completed planning phases={0} pass={1}" -f (Join-IntList -Values $planTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
                 } else {
