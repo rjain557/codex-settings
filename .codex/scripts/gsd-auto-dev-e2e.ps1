@@ -22,6 +22,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+$script:LastReviewProgressSignature = ""
+$script:RunnerStartTime = $null
+
 if ($OpenWindow) {
     $selfPath = $MyInvocation.MyCommand.Path
     if (-not (Test-Path $selfPath)) {
@@ -777,6 +780,332 @@ function Get-PhaseCounts {
     }
 }
 
+function Get-AllPhases {
+    param([string]$RoadmapFile)
+
+    if (-not (Test-Path $RoadmapFile)) { return @() }
+    $matches = @(Select-String -Path $RoadmapFile -Pattern '^- \[[ xX]\] \*\*Phase (\d+):' -CaseSensitive:$false)
+    $phases = @()
+
+    foreach ($m in $matches) {
+        if ($m.Matches.Count -gt 0) {
+            $phases += [int]$m.Matches[0].Groups[1].Value
+        }
+    }
+
+    return @($phases | Sort-Object -Unique)
+}
+
+function Join-IntList {
+    param(
+        [int[]]$Values,
+        [int]$MaxItems = 8
+    )
+
+    $sorted = @($Values | Sort-Object -Unique)
+    if ($sorted.Count -eq 0) { return "none" }
+    if ($MaxItems -lt 1 -or $sorted.Count -le $MaxItems) { return ($sorted -join ",") }
+
+    $shown = @($sorted[0..($MaxItems - 1)])
+    return ("{0}...(+{1})" -f ($shown -join ","), ($sorted.Count - $MaxItems))
+}
+
+function Get-DeltaText {
+    param(
+        [string]$Name,
+        [object]$Before,
+        [object]$After
+    )
+
+    if ($null -eq $Before -or $null -eq $After) { return ("{0}=unknown" -f $Name) }
+
+    $delta = [int]$After - [int]$Before
+    $deltaText = if ($delta -ge 0) { "+$delta" } else { [string]$delta }
+    return ("{0}={1}" -f $Name, $deltaText)
+}
+
+function Get-LogSubstageSnapshot {
+    param(
+        [string]$LogFile,
+        [string]$FallbackPhase
+    )
+
+    $substage = "working"
+    $hint = ""
+    $phase = $FallbackPhase
+
+    if (-not (Test-Path $LogFile)) {
+        return [PSCustomObject]@{
+            Substage = $substage
+            Hint     = $hint
+            Phase    = $phase
+        }
+    }
+
+    $tail = @(Get-Content -Path $LogFile -Tail 320 -ErrorAction SilentlyContinue)
+    for ($i = $tail.Count - 1; $i -ge 0; $i--) {
+        $line = [string]$tail[$i]
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+
+        if ([string]::IsNullOrWhiteSpace($hint)) {
+            $mAction = [regex]::Match($line, '(?i)Current action:\s*(.+)$')
+            if ($mAction.Success) {
+                $hint = [string]$mAction.Groups[1].Value.Trim()
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($hint)) {
+            $mSummary = [regex]::Match($line, '(?i)^\s*Summary:\s*(.+)$')
+            if ($mSummary.Success) {
+                $hint = [string]$mSummary.Groups[1].Value.Trim()
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($phase) -or $phase -eq "-") {
+            $mPhase = [regex]::Match($line, '(?i)\bphase(?:s)?\s+(\d{1,4})\b')
+            if ($mPhase.Success) {
+                $phase = [string]$mPhase.Groups[1].Value
+            }
+        }
+
+        if ($line -match '(?i)\b(phase synthesis|remediation phase|created phase)\b') {
+            $substage = "phase-synthesis"
+            break
+        }
+        if ($line -match '(?i)\b(gsd-code-review|gsd-sdlc-review|code-review-summary|executive-summary|finalreview|deep review|runtime gates|build/typecheck|review pipeline)\b') {
+            $substage = "code-review"
+            break
+        }
+        if ($line -match '(?i)\b(executed_sequential_count|gsd-batch-execute|execute-phase|sequential phase execution|execution stage|marking phases .* complete|phase execution)\b') {
+            $substage = "execute"
+            break
+        }
+        if ($line -match '(?i)\b(plan_dispatched|gsd-batch-plan|batch-plan|plan artifacts?|needs plan|planning)\b') {
+            $substage = "planning"
+            break
+        }
+        if ($line -match '(?i)\b(research_dispatched|gsd-batch-research|batch-research|research artifacts?|needs research|research)\b') {
+            $substage = "research"
+            break
+        }
+    }
+
+    if ($hint.Length -gt 220) {
+        $hint = $hint.Substring(0, 217) + "..."
+    }
+
+    return [PSCustomObject]@{
+        Substage = $substage
+        Hint     = $hint
+        Phase    = $phase
+    }
+}
+
+function Get-CodeReviewSnapshot {
+    param([datetime]$NotBeforeUtc)
+
+    $candidates = New-Object System.Collections.Generic.List[object]
+
+    foreach ($summaryPath in @($script:ResolvedSummaryPaths)) {
+        $reviewDir = Split-Path -Parent $summaryPath
+        if ([string]::IsNullOrWhiteSpace($reviewDir)) { continue }
+        $codeReviewSummaryPath = Join-Path $reviewDir "layers\code-review-summary.json"
+        if (-not (Test-Path $codeReviewSummaryPath)) { continue }
+
+        $mtimeUtc = (Get-Item $codeReviewSummaryPath).LastWriteTimeUtc
+        $candidates.Add([PSCustomObject]@{
+            Path     = $codeReviewSummaryPath
+            MTimeUtc = $mtimeUtc
+        }) | Out-Null
+    }
+
+    if ($candidates.Count -eq 0) { return $null }
+    $pick = @($candidates | Sort-Object MTimeUtc -Descending)[0]
+
+    $jsonRaw = Get-Content -Raw -Path $pick.Path
+    $json = $null
+    try { $json = $jsonRaw | ConvertFrom-Json -ErrorAction Stop } catch { $json = $null }
+
+    if (-not $json) {
+        return [PSCustomObject]@{
+            Path            = $pick.Path
+            FreshEnough     = $false
+            GeneratedUtc    = $pick.MTimeUtc
+            DeepStatus      = "UNAVAILABLE"
+            DeepHealthScore = $null
+            TotalFindings   = $null
+            Blocker         = $null
+            High            = $null
+            Medium          = $null
+            Low             = $null
+            LineTraceStatus = "UNAVAILABLE"
+            ParseError      = $true
+        }
+    }
+
+    $deepStatus = ""
+    $deepHealth = $null
+    $lineTraceStatus = ""
+    $totalFindings = $null
+    $blocker = $null
+    $high = $null
+    $medium = $null
+    $low = $null
+
+    if (($json.PSObject.Properties.Name -contains "deepReview") -and $json.deepReview) {
+        if ($json.deepReview.PSObject.Properties.Name -contains "status") {
+            $deepStatus = [string]$json.deepReview.status
+        }
+        if ($json.deepReview.PSObject.Properties.Name -contains "healthScore") {
+            $deepHealth = $json.deepReview.healthScore
+        }
+        if (($json.deepReview.PSObject.Properties.Name -contains "totals") -and $json.deepReview.totals) {
+            $deepTotals = $json.deepReview.totals
+            $tmp = 0
+            if (($deepTotals.PSObject.Properties.Name -contains "TOTAL_FINDINGS") -and [int]::TryParse([string]$deepTotals.TOTAL_FINDINGS, [ref]$tmp)) {
+                $totalFindings = $tmp
+            }
+        }
+    }
+
+    if (($json.PSObject.Properties.Name -contains "lineTraceability") -and $json.lineTraceability) {
+        if ($json.lineTraceability.PSObject.Properties.Name -contains "status") {
+            $lineTraceStatus = [string]$json.lineTraceability.status
+        }
+    }
+
+    if (($json.PSObject.Properties.Name -contains "totals") -and $json.totals) {
+        $totals = $json.totals
+        $tmp = 0
+        if (($totals.PSObject.Properties.Name -contains "TOTAL_FINDINGS") -and [int]::TryParse([string]$totals.TOTAL_FINDINGS, [ref]$tmp)) {
+            $totalFindings = $tmp
+        }
+        if (($totals.PSObject.Properties.Name -contains "BLOCKER") -and [int]::TryParse([string]$totals.BLOCKER, [ref]$tmp)) {
+            $blocker = $tmp
+        }
+        if (($totals.PSObject.Properties.Name -contains "HIGH") -and [int]::TryParse([string]$totals.HIGH, [ref]$tmp)) {
+            $high = $tmp
+        }
+        if (($totals.PSObject.Properties.Name -contains "MEDIUM") -and [int]::TryParse([string]$totals.MEDIUM, [ref]$tmp)) {
+            $medium = $tmp
+        }
+        if (($totals.PSObject.Properties.Name -contains "LOW") -and [int]::TryParse([string]$totals.LOW, [ref]$tmp)) {
+            $low = $tmp
+        }
+    }
+
+    $generatedText = ""
+    if ($json.PSObject.Properties.Name -contains "generatedUtc") {
+        $generatedText = [string]$json.generatedUtc
+    }
+    if ([string]::IsNullOrWhiteSpace($generatedText) -and
+        ($json.PSObject.Properties.Name -contains "deepReview") -and
+        $json.deepReview -and
+        ($json.deepReview.PSObject.Properties.Name -contains "generatedUtc")) {
+        $generatedText = [string]$json.deepReview.generatedUtc
+    }
+
+    $generatedUtc = Try-ParseUtcDateTime -Text $generatedText
+    if (-not $generatedUtc) { $generatedUtc = $pick.MTimeUtc }
+
+    $freshEnough = $generatedUtc -ge $NotBeforeUtc.AddMinutes(-1)
+
+    return [PSCustomObject]@{
+        Path            = $pick.Path
+        FreshEnough     = $freshEnough
+        GeneratedUtc    = $generatedUtc
+        DeepStatus      = $deepStatus
+        DeepHealthScore = $deepHealth
+        TotalFindings   = $totalFindings
+        Blocker         = $blocker
+        High            = $high
+        Medium          = $medium
+        Low             = $low
+        LineTraceStatus = $lineTraceStatus
+        ParseError      = $false
+    }
+}
+
+function Write-CodeReviewProgress {
+    param(
+        [string]$StatusPath,
+        [int]$Cycle,
+        [string]$Stage,
+        [string]$Phase,
+        [string]$LogName,
+        [datetime]$NotBeforeUtc,
+        [switch]$Force
+    )
+
+    $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+    $review = Get-CodeReviewSnapshot -NotBeforeUtc $NotBeforeUtc
+    if (-not $review) {
+        Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage ("{0}-review-summary" -f $Stage) -Doing "code-review summary missing" -Phase $Phase -IsRunning $false -LogName $LogName
+        return
+    }
+
+    $healthText = if ($metric -and $null -ne $metric.Health) { "{0}/100" -f $metric.Health } else { "unknown" }
+    $driftText = if ($metric -and $null -ne $metric.Drift) { [string]$metric.Drift } else { "unknown" }
+    $unmappedText = if ($metric -and $null -ne $metric.Unmapped) { [string]$metric.Unmapped } else { "unknown" }
+
+    $deepHealthText = if ($null -ne $review.DeepHealthScore -and -not [string]::IsNullOrWhiteSpace([string]$review.DeepHealthScore)) { [string]$review.DeepHealthScore } else { "unknown" }
+    $findingsText = if ($null -ne $review.TotalFindings) { [string]$review.TotalFindings } else { "unknown" }
+    $lineTraceText = if ([string]::IsNullOrWhiteSpace([string]$review.LineTraceStatus)) { "unknown" } else { [string]$review.LineTraceStatus }
+    $deepStatusText = if ([string]::IsNullOrWhiteSpace([string]$review.DeepStatus)) { "unknown" } else { [string]$review.DeepStatus }
+    $freshText = if ($review.FreshEnough) { "fresh" } else { "stale" }
+    $generatedText = if ($review.GeneratedUtc) { $review.GeneratedUtc.ToString("yyyy-MM-ddTHH:mm:ssZ") } else { "unknown" }
+
+    $signature = "{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}" -f $generatedText, $healthText, $driftText, $unmappedText, $deepStatusText, $deepHealthText, $findingsText, $lineTraceText
+    if ((-not $Force) -and $signature -eq $script:LastReviewProgressSignature) {
+        return
+    }
+    $script:LastReviewProgressSignature = $signature
+
+    $doing = "code-review summary health=$healthText drift=$driftText unmapped=$unmappedText deep_status=$deepStatusText deep_health=$deepHealthText findings=$findingsText line_trace=$lineTraceText generated_utc=$generatedText freshness=$freshText"
+    Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage ("{0}-review-summary" -f $Stage) -Doing $doing -Phase $Phase -IsRunning $false -LogName $LogName
+}
+
+function Write-PhaseWaveProgress {
+    param(
+        [string]$StatusPath,
+        [int]$Cycle,
+        [string]$Stage,
+        [string]$Phase,
+        [string]$LogName,
+        [int[]]$BeforePending,
+        [int[]]$AfterPending,
+        [int[]]$BeforeAll,
+        [int[]]$AfterAll,
+        [object]$BeforeMetric,
+        [object]$AfterMetric
+    )
+
+    $created = @($AfterAll | Where-Object { $BeforeAll -notcontains $_ } | Sort-Object -Unique)
+    $completedNow = @($BeforePending | Where-Object { $AfterPending -notcontains $_ } | Sort-Object -Unique)
+    $newPending = @($AfterPending | Where-Object { $BeforePending -notcontains $_ } | Sort-Object -Unique)
+
+    $pendingDelta = @($AfterPending).Count - @($BeforePending).Count
+    $pendingDeltaText = if ($pendingDelta -ge 0) { "+$pendingDelta" } else { [string]$pendingDelta }
+
+    $assignedText = "findings_assigned_delta=unknown"
+    if ($BeforeMetric -and $AfterMetric -and $null -ne $BeforeMetric.Unmapped -and $null -ne $AfterMetric.Unmapped) {
+        $assigned = [int]$BeforeMetric.Unmapped - [int]$AfterMetric.Unmapped
+        $assignedText = if ($assigned -ge 0) { "findings_assigned_delta=+$assigned" } else { "findings_assigned_delta=$assigned" }
+    }
+
+    $doing = "phase-wave created={0} completed={1} new_pending={2} pending_delta={3} {4} {5} {6} {7}" -f `
+        (Join-IntList -Values $created),
+        (Join-IntList -Values $completedNow),
+        (Join-IntList -Values $newPending),
+        $pendingDeltaText,
+        $assignedText,
+        (Get-DeltaText -Name "health_delta" -Before $(if ($BeforeMetric) { $BeforeMetric.Health } else { $null }) -After $(if ($AfterMetric) { $AfterMetric.Health } else { $null })),
+        (Get-DeltaText -Name "drift_delta" -Before $(if ($BeforeMetric) { $BeforeMetric.Drift } else { $null }) -After $(if ($AfterMetric) { $AfterMetric.Drift } else { $null })),
+        (Get-DeltaText -Name "unmapped_delta" -Before $(if ($BeforeMetric) { $BeforeMetric.Unmapped } else { $null }) -After $(if ($AfterMetric) { $AfterMetric.Unmapped } else { $null }))
+
+    Write-ProgressUpdate -StatusPath $StatusPath -Cycle $Cycle -Stage ("{0}-phase-wave" -f $Stage) -Doing $doing -Phase $Phase -IsRunning $false -LogName $LogName
+}
+
 function Write-ProgressUpdate {
     param(
         [string]$StatusPath,
@@ -796,9 +1125,25 @@ function Write-ProgressUpdate {
     $phaseCounts = Get-PhaseCounts -RoadmapFile $script:ResolvedRoadmapPath -IsRunning $IsRunning -PhaseText $Phase
     $commitsDone = Get-CommitDeltaSinceStart
 
+    $stageText = if ([string]::IsNullOrWhiteSpace($Stage)) { "-" } else { ($Stage -replace '\s+', '_').Trim() }
+    $phaseText = if ([string]::IsNullOrWhiteSpace($Phase)) { "-" } else { ($Phase -replace '\s+', '').Trim() }
+    $doingText = if ([string]::IsNullOrWhiteSpace($Doing)) { "-" } else { ($Doing -replace '[\r\n]+', ' ' -replace '"', "'").Trim() }
+    if ($doingText.Length -gt 320) {
+        $doingText = $doingText.Substring(0, 317) + "..."
+    }
+
+    $elapsedText = "unknown"
+    if ($script:RunnerStartTime -is [datetime]) {
+        $elapsed = (Get-Date) - $script:RunnerStartTime
+        if ($elapsed.TotalSeconds -ge 0) {
+            $elapsedText = "{0:00}:{1:00}:{2:00}" -f [int][math]::Floor($elapsed.TotalHours), $elapsed.Minutes, $elapsed.Seconds
+        }
+    }
+
+    $logText = if ([string]::IsNullOrWhiteSpace($LogName)) { "-" } else { $LogName.Trim() }
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $line = '[{0}] cycle={1} stage={2} doing="{3}" phase={4} phases(completed={5},in_progress={6},pending={7}) target(h=100,d=0,u=0) current(h={8},d={9},u={10}) commits={11} log={12}' -f `
-        $ts, $Cycle, $Stage, $Doing, $Phase, $phaseCounts.Completed, $phaseCounts.InProgress, $phaseCounts.Pending, $healthText, $driftText, $unmappedText, $commitsDone, $LogName
+    $line = '[{0}] cycle={1} stage={2} doing="{3}" phase={4} phases(completed={5},in_progress={6},pending={7}) target(h=100,d=0,u=0) current(h={8},d={9},u={10}) commits={11} elapsed={12} log={13}' -f `
+        $ts, $Cycle, $stageText, $doingText, $phaseText, $phaseCounts.Completed, $phaseCounts.InProgress, $phaseCounts.Pending, $healthText, $driftText, $unmappedText, $commitsDone, $elapsedText, $logText
 
     Add-Content -Path $StatusPath -Value $line
     Write-Host $line -ForegroundColor Green
@@ -844,7 +1189,15 @@ function Invoke-GlobalSkillMonitored {
 
     while (-not $proc.HasExited) {
         if (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatSeconds) {
-            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-running" -f $Stage) -Doing $Doing -Phase $Phase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
+            $sub = Get-LogSubstageSnapshot -LogFile $LogFile -FallbackPhase $Phase
+            $substage = if ([string]::IsNullOrWhiteSpace([string]$sub.Substage)) { "working" } else { ([string]$sub.Substage -replace '\s+', '-').ToLowerInvariant() }
+            $runningPhase = if ([string]::IsNullOrWhiteSpace([string]$sub.Phase)) { $Phase } else { [string]$sub.Phase }
+            $runningDoing = $Doing
+            if (-not [string]::IsNullOrWhiteSpace([string]$sub.Hint)) {
+                $runningDoing = "{0}; {1}" -f $Doing, ([string]$sub.Hint)
+            }
+
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-running-{1}" -f $Stage, $substage) -Doing $runningDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
             $lastHeartbeat = Get-Date
         }
 
@@ -972,6 +1325,7 @@ Write-Host ("Status log:            {0}" -f $script:ResolvedStatusPath) -Foregro
 Write-Host ("Target metrics:        Health=100, Drift=0, Unmapped=0") -ForegroundColor White
 
 $startTime = Get-Date
+$script:RunnerStartTime = $startTime
 $lastAutoDevLog = ""
 $lastConfirmLog = ""
 $stopReason = "max_outer_loops_reached"
@@ -1008,8 +1362,9 @@ Execution contract:
   - state path `{3}`
 - If root/roadmap is ambiguous, fail fast and print conflicting paths.
 - If commit/push fails, auto-fix git issues and retry until push succeeds before continuing.
-- Mandatory progress update every 1 minute including:
+- Mandatory progress update every heartbeat interval (configured by `HeartbeatSeconds`) including:
   - what script is currently doing
+  - current substage (`research`, `planning`, `execute`, `code-review`, or `phase-synthesis`)
   - current phase counts (completed, in progress, pending)
   - target metrics (health=100, drift=0, unmapped=0)
   - current metrics (health, drift, unmapped)
@@ -1049,6 +1404,8 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
     try {
         $cycleStartUtc = (Get-Date).ToUniversalTime()
         $pendingBefore = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+        $allPhasesBefore = @(Get-AllPhases -RoadmapFile $script:ResolvedRoadmapPath)
+        $metricBefore = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
         $phaseText = if ($pendingBefore.Count -gt 0) { [string]$pendingBefore[0] } else { "-" }
 
         $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
@@ -1068,9 +1425,12 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
 
         $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
         $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+        $allPhasesAfter = @(Get-AllPhases -RoadmapFile $script:ResolvedRoadmapPath)
         $deepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $cycleStartUtc
 
         Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Doing "evaluating clean-candidate gates" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
+        Write-PhaseWaveProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Phase $phaseText -LogName (Split-Path -Leaf $autoDevLog) -BeforePending $pendingBefore -AfterPending $pendingAfter -BeforeAll $allPhasesBefore -AfterAll $allPhasesAfter -BeforeMetric $metricBefore -AfterMetric $metric
+        Write-CodeReviewProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Phase $phaseText -LogName (Split-Path -Leaf $autoDevLog) -NotBeforeUtc $cycleStartUtc
         if (-not $deepReviewEvidence.Ok) {
             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-auto-dev-deep-review-invalid" -Doing ("deep-review evidence invalid: {0}" -f $deepReviewEvidence.Reason) -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
         }
@@ -1087,6 +1447,9 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
         )
 
         if ($needsPhaseSynthesis) {
+            $synthPendingBefore = @($pendingAfter)
+            $synthAllBefore = @($allPhasesAfter)
+            $synthMetricBefore = $metric
             $synthLog = Join-Path $script:ResolvedLogDir ("phase-synthesis-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
             $phaseSynthesisExit = Invoke-GlobalSkillMonitored -Prompt $phaseSynthesisPrompt -LogFile $synthLog -Stage "phase-synthesis" -Cycle $cycle -Phase "-" -Doing "forcing remediation phase synthesis from latest review findings"
 
@@ -1099,9 +1462,12 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
 
             $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
             $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+            $allPhasesAfter = @(Get-AllPhases -RoadmapFile $script:ResolvedRoadmapPath)
             $deepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $cycleStartUtc
 
             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Doing "re-evaluated metrics after forced phase synthesis" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
+            Write-PhaseWaveProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Phase "-" -LogName (Split-Path -Leaf $synthLog) -BeforePending $synthPendingBefore -AfterPending $pendingAfter -BeforeAll $synthAllBefore -AfterAll $allPhasesAfter -BeforeMetric $synthMetricBefore -AfterMetric $metric
+            Write-CodeReviewProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Phase "-" -LogName (Split-Path -Leaf $synthLog) -NotBeforeUtc $cycleStartUtc
             if (-not $deepReviewEvidence.Ok) {
                 Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-phase-synthesis-deep-review-invalid" -Doing ("deep-review evidence still invalid: {0}" -f $deepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
             }
@@ -1140,6 +1506,7 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
         $noCodeChanges = Test-CodeFingerprintEqual -Left $codeBefore -Right $codeAfter
 
         Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -Doing ("final confirmation analyzed; no_code_changes={0}" -f $noCodeChanges) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
+        Write-CodeReviewProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -Phase "-" -LogName (Split-Path -Leaf $confirmLog) -NotBeforeUtc $confirmStartUtc -Force
         if (-not $confirmDeepReviewEvidence.Ok) {
             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-final-confirm-deep-review-invalid" -Doing ("confirmation deep-review evidence invalid: {0}" -f $confirmDeepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
         }
