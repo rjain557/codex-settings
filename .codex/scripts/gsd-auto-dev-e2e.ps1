@@ -851,13 +851,16 @@ function Invoke-GlobalSkillMonitored {
         Start-Sleep -Seconds 2
     }
 
+    $null = $proc.WaitForExit()
+    $exitCode = if ($null -eq $proc.ExitCode) { -1 } else { [int]$proc.ExitCode }
+
     if (Test-Path $errFile) {
         Get-Content -Path $errFile | Add-Content -Path $LogFile
     }
 
-    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-exit-{1}" -f $Stage, $proc.ExitCode) -Doing $Doing -Phase $Phase -IsRunning $false -LogName (Split-Path -Leaf $LogFile)
+    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-exit-{1}" -f $Stage, $exitCode) -Doing $Doing -Phase $Phase -IsRunning $false -LogName (Split-Path -Leaf $LogFile)
 
-    return $proc.ExitCode
+    return $exitCode
 }
 
 $script:ResolvedProjectRoot = (Resolve-Path -Path $ProjectRoot).Path
@@ -1043,53 +1046,23 @@ Remediation phase synthesis contract:
 $phaseSynthesisPrompt = [string]::Format($phaseSynthesisPromptTemplate, $script:ReviewRootRelativeEffective, $RoadmapPath, $StatePath)
 
 for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
-    $cycleStartUtc = (Get-Date).ToUniversalTime()
-    $pendingBefore = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
-    $phaseText = if ($pendingBefore.Count -gt 0) { [string]$pendingBefore[0] } else { "-" }
+    try {
+        $cycleStartUtc = (Get-Date).ToUniversalTime()
+        $pendingBefore = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+        $phaseText = if ($pendingBefore.Count -gt 0) { [string]$pendingBefore[0] } else { "-" }
 
-    $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
-    $autoDevLog = Join-Path $script:ResolvedLogDir ("auto-dev-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
-    $lastAutoDevLog = $autoDevLog
+        $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
+        $autoDevLog = Join-Path $script:ResolvedLogDir ("auto-dev-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
+        $lastAutoDevLog = $autoDevLog
 
-    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "cycle-start" -Doing ("starting cycle {0}" -f $cycle) -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
+        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "cycle-start" -Doing ("starting cycle {0}" -f $cycle) -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
 
-    $autoDevExit = Invoke-GlobalSkillMonitored -Prompt $autoDevPrompt -LogFile $autoDevLog -Stage "auto-dev" -Cycle $cycle -Phase $phaseText -Doing ("running {0}" -f $autoDevCommand)
+        $autoDevExit = Invoke-GlobalSkillMonitored -Prompt $autoDevPrompt -LogFile $autoDevLog -Stage "auto-dev" -Cycle $cycle -Phase $phaseText -Doing ("running {0}" -f $autoDevCommand)
 
-    $pushAfterAutoDev = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "auto-dev"
-    if (-not $pushAfterAutoDev.Ok) {
-        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterAutoDev.Status) -Doing "stopping after push failure" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
-        $stopReason = $pushAfterAutoDev.Status
-        break
-    }
-
-    $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
-    $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
-    $deepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $cycleStartUtc
-
-    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Doing "evaluating clean-candidate gates" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
-    if (-not $deepReviewEvidence.Ok) {
-        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-auto-dev-deep-review-invalid" -Doing ("deep-review evidence invalid: {0}" -f $deepReviewEvidence.Reason) -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
-    }
-
-    $needsPhaseSynthesis = (
-        $pendingAfter.Count -eq 0 -and (
-            -not $metric -or
-            -not $metric.Complete -or
-            $metric.Health -ne 100 -or
-            $metric.Drift -ne 0 -or
-            $metric.Unmapped -ne 0 -or
-            -not $deepReviewEvidence.Ok
-        )
-    )
-
-    if ($needsPhaseSynthesis) {
-        $synthLog = Join-Path $script:ResolvedLogDir ("phase-synthesis-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
-        $phaseSynthesisExit = Invoke-GlobalSkillMonitored -Prompt $phaseSynthesisPrompt -LogFile $synthLog -Stage "phase-synthesis" -Cycle $cycle -Phase "-" -Doing "forcing remediation phase synthesis from latest review findings"
-
-        $pushAfterSynthesis = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-synthesis"
-        if (-not $pushAfterSynthesis.Ok) {
-            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterSynthesis.Status) -Doing "stopping after phase-synthesis push failure" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
-            $stopReason = $pushAfterSynthesis.Status
+        $pushAfterAutoDev = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "auto-dev"
+        if (-not $pushAfterAutoDev.Ok) {
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterAutoDev.Status) -Doing "stopping after push failure" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
+            $stopReason = $pushAfterAutoDev.Status
             break
         }
 
@@ -1097,63 +1070,107 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
         $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
         $deepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $cycleStartUtc
 
-        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Doing "re-evaluated metrics after forced phase synthesis" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
+        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Doing "evaluating clean-candidate gates" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
         if (-not $deepReviewEvidence.Ok) {
-            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-phase-synthesis-deep-review-invalid" -Doing ("deep-review evidence still invalid: {0}" -f $deepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-auto-dev-deep-review-invalid" -Doing ("deep-review evidence invalid: {0}" -f $deepReviewEvidence.Reason) -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
         }
-    }
 
-    $isCleanCandidate = (
-        $metric -and $metric.Complete -and
-        $metric.Health -eq 100 -and
-        $metric.Drift -eq 0 -and
-        $metric.Unmapped -eq 0 -and
-        $pendingAfter.Count -eq 0 -and
-        $deepReviewEvidence.Ok
-    )
+        $needsPhaseSynthesis = (
+            $pendingAfter.Count -eq 0 -and (
+                -not $metric -or
+                -not $metric.Complete -or
+                $metric.Health -ne 100 -or
+                $metric.Drift -ne 0 -or
+                $metric.Unmapped -ne 0 -or
+                -not $deepReviewEvidence.Ok
+            )
+        )
 
-    if (-not $isCleanCandidate) { continue }
+        if ($needsPhaseSynthesis) {
+            $synthLog = Join-Path $script:ResolvedLogDir ("phase-synthesis-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
+            $phaseSynthesisExit = Invoke-GlobalSkillMonitored -Prompt $phaseSynthesisPrompt -LogFile $synthLog -Stage "phase-synthesis" -Cycle $cycle -Phase "-" -Doing "forcing remediation phase synthesis from latest review findings"
 
-    $codeBefore = Get-CodeFingerprint
+            $pushAfterSynthesis = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-synthesis"
+            if (-not $pushAfterSynthesis.Ok) {
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterSynthesis.Status) -Doing "stopping after phase-synthesis push failure" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
+                $stopReason = $pushAfterSynthesis.Status
+                break
+            }
 
-    $confirmLog = Join-Path $script:ResolvedLogDir ("final-confirm-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
-    $lastConfirmLog = $confirmLog
-    $confirmStartUtc = (Get-Date).ToUniversalTime()
+            $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+            $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+            $deepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $cycleStartUtc
 
-    $confirmExit = Invoke-GlobalSkillMonitored -Prompt $confirmPrompt -LogFile $confirmLog -Stage "final-confirm" -Cycle $cycle -Phase "-" -Doing "running final clean confirmation review"
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Doing "re-evaluated metrics after forced phase synthesis" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
+            if (-not $deepReviewEvidence.Ok) {
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-phase-synthesis-deep-review-invalid" -Doing ("deep-review evidence still invalid: {0}" -f $deepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
+            }
+        }
 
-    $pushAfterConfirm = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "final-confirm"
-    if (-not $pushAfterConfirm.Ok) {
-        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterConfirm.Status) -Doing "stopping after confirmation push failure" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
-        $stopReason = $pushAfterConfirm.Status
-        break
-    }
+        $isCleanCandidate = (
+            $metric -and $metric.Complete -and
+            $metric.Health -eq 100 -and
+            $metric.Drift -eq 0 -and
+            $metric.Unmapped -eq 0 -and
+            $pendingAfter.Count -eq 0 -and
+            $deepReviewEvidence.Ok
+        )
 
-    $confirmMetric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
-    $pendingConfirm = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
-    $confirmDeepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $confirmStartUtc
-    $codeAfter = Get-CodeFingerprint
-    $noCodeChanges = Test-CodeFingerprintEqual -Left $codeBefore -Right $codeAfter
+        if (-not $isCleanCandidate) { continue }
 
-    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -Doing ("final confirmation analyzed; no_code_changes={0}" -f $noCodeChanges) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
-    if (-not $confirmDeepReviewEvidence.Ok) {
-        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-final-confirm-deep-review-invalid" -Doing ("confirmation deep-review evidence invalid: {0}" -f $confirmDeepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
-    }
+        $codeBefore = Get-CodeFingerprint
 
-    $confirmClean = (
-        $confirmMetric -and $confirmMetric.Complete -and
-        $confirmMetric.Health -eq 100 -and
-        $confirmMetric.Drift -eq 0 -and
-        $confirmMetric.Unmapped -eq 0 -and
-        $pendingConfirm.Count -eq 0 -and
-        $noCodeChanges -and
-        $confirmDeepReviewEvidence.Ok
-    )
+        $confirmLog = Join-Path $script:ResolvedLogDir ("final-confirm-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
+        $lastConfirmLog = $confirmLog
+        $confirmStartUtc = (Get-Date).ToUniversalTime()
 
-    if ($confirmClean) {
-        $finalMetric = $confirmMetric
-        $stopReason = "clean-confirmed"
-        break
+        $confirmExit = Invoke-GlobalSkillMonitored -Prompt $confirmPrompt -LogFile $confirmLog -Stage "final-confirm" -Cycle $cycle -Phase "-" -Doing "running final clean confirmation review"
+
+        $pushAfterConfirm = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "final-confirm"
+        if (-not $pushAfterConfirm.Ok) {
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterConfirm.Status) -Doing "stopping after confirmation push failure" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
+            $stopReason = $pushAfterConfirm.Status
+            break
+        }
+
+        $confirmMetric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+        $pendingConfirm = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+        $confirmDeepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $confirmStartUtc
+        $codeAfter = Get-CodeFingerprint
+        $noCodeChanges = Test-CodeFingerprintEqual -Left $codeBefore -Right $codeAfter
+
+        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -Doing ("final confirmation analyzed; no_code_changes={0}" -f $noCodeChanges) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
+        if (-not $confirmDeepReviewEvidence.Ok) {
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-final-confirm-deep-review-invalid" -Doing ("confirmation deep-review evidence invalid: {0}" -f $confirmDeepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
+        }
+
+        $confirmClean = (
+            $confirmMetric -and $confirmMetric.Complete -and
+            $confirmMetric.Health -eq 100 -and
+            $confirmMetric.Drift -eq 0 -and
+            $confirmMetric.Unmapped -eq 0 -and
+            $pendingConfirm.Count -eq 0 -and
+            $noCodeChanges -and
+            $confirmDeepReviewEvidence.Ok
+        )
+
+        if ($confirmClean) {
+            $finalMetric = $confirmMetric
+            $stopReason = "clean-confirmed"
+            break
+        }
+    } catch {
+        $errText = ($_ | Out-String).Trim()
+        if ([string]::IsNullOrWhiteSpace($errText)) {
+            $errText = "unknown-cycle-exception"
+        } elseif ($errText.Length -gt 180) {
+            $errText = $errText.Substring(0, 177) + "..."
+        }
+
+        $fallbackLog = if ([string]::IsNullOrWhiteSpace($lastAutoDevLog)) { "-" } else { Split-Path -Leaf $lastAutoDevLog }
+        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "cycle-exception" -Doing ("cycle exception: {0}" -f $errText) -Phase "-" -IsRunning $false -LogName $fallbackLog
+        Start-Sleep -Seconds 2
+        continue
     }
 }
 
