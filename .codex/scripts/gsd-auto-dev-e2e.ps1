@@ -15,6 +15,7 @@ param(
     [string]$LogDir = ".planning/agent-output",
     [string]$StatusFile = ".planning/agent-output/gsd-e2e-status.log",
     [int]$HeartbeatSeconds = 60,
+    [int]$HeartbeatCheckSeconds = 30,
     [int]$PreflightMaxSeconds = 180,
     [switch]$ProgressToConsole = $false,
     [switch]$AllowRun = $false,
@@ -178,6 +179,7 @@ if ($OpenWindow) {
     LogDir = '$logDirEsc'
     StatusFile = '$statusEsc'
     HeartbeatSeconds = $HeartbeatSeconds
+    HeartbeatCheckSeconds = $HeartbeatCheckSeconds
     PreflightMaxSeconds = $PreflightMaxSeconds
     StrictRoot = $strictLiteral
     ProgressToConsole = $progressToConsoleLiteral
@@ -1906,7 +1908,10 @@ function Invoke-GlobalSkillMonitored {
         $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardOutput $LogFile -RedirectStandardError $errFile
     }
 
-    $lastHeartbeat = (Get-Date).AddSeconds(-1 * [math]::Max(1, $HeartbeatSeconds))
+    $heartbeatIntervalSeconds = [math]::Max(1, [int]$HeartbeatSeconds)
+    $heartbeatCheckIntervalSeconds = [math]::Max(5, [int]$HeartbeatCheckSeconds)
+    $lastHeartbeat = (Get-Date).AddSeconds(-1 * $heartbeatIntervalSeconds)
+    $lastHeartbeatCheck = Get-Date
     $trackedSubstages = @("research", "planning", "execute", "code-review", "phase-synthesis")
     $activeSubstage = ""
     $substageEntryPending = @{}
@@ -1989,7 +1994,22 @@ function Invoke-GlobalSkillMonitored {
             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-enter-{1}" -f $Stage, $activeSubstage) -Doing $enterDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
         }
 
-        $heartbeatDue = (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatSeconds)
+        $heartbeatDue = (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $heartbeatIntervalSeconds)
+        $heartbeatCheckDue = (((Get-Date) - $lastHeartbeatCheck).TotalSeconds -ge $heartbeatCheckIntervalSeconds)
+        if ($heartbeatCheckDue) {
+            $heartbeatDoing = ("heartbeat-check substage={0} phase={1} interval={2}s" -f $substage, $runningPhase, $heartbeatCheckIntervalSeconds)
+            if ($substage -eq "execute") {
+                $phaseInt = 0
+                $findingRefsText = "unknown"
+                if ([int]::TryParse([string]$runningPhase, [ref]$phaseInt)) {
+                    $findingRefsText = Join-StringList -Values @(Get-PhaseFindingReferences -PhaseId $phaseInt) -MaxItems 6
+                }
+                $heartbeatDoing = ("{0} finding_refs={1}" -f $heartbeatDoing, $findingRefsText)
+            }
+
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-heartbeat-check-{1}" -f $Stage, $substage) -Doing $heartbeatDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
+            $lastHeartbeatCheck = Get-Date
+        }
         if ($heartbeatDue -or $substageChanged) {
             $runningDoing = $Doing
             if (-not [string]::IsNullOrWhiteSpace([string]$sub.Hint)) {
@@ -2143,7 +2163,10 @@ function Invoke-GlobalSkillParallelPhaseBatch {
         }) | Out-Null
     }
 
-    $lastHeartbeat = (Get-Date).AddSeconds(-1 * [math]::Max(1, $HeartbeatSeconds))
+    $heartbeatIntervalSeconds = [math]::Max(1, [int]$HeartbeatSeconds)
+    $heartbeatCheckIntervalSeconds = [math]::Max(5, [int]$HeartbeatCheckSeconds)
+    $lastHeartbeat = (Get-Date).AddSeconds(-1 * $heartbeatIntervalSeconds)
+    $lastHeartbeatCheck = Get-Date
     while (@($workers | Where-Object { -not $_.Completed }).Count -gt 0) {
         $runningPhases = New-Object System.Collections.Generic.List[int]
 
@@ -2167,7 +2190,16 @@ function Invoke-GlobalSkillParallelPhaseBatch {
             }
         }
 
-        $heartbeatDue = (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $HeartbeatSeconds)
+        $completedCount = @($workers | Where-Object { $_.Completed }).Count
+        $totalCount = $workers.Count
+        $heartbeatDue = (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $heartbeatIntervalSeconds)
+        $heartbeatCheckDue = (((Get-Date) - $lastHeartbeatCheck).TotalSeconds -ge $heartbeatCheckIntervalSeconds)
+        if ($heartbeatCheckDue) {
+            $runningList = Join-IntList -Values @($runningPhases.ToArray()) -MaxItems 20
+            $runningPhase = if ($runningPhases.Count -gt 0) { [string]$runningPhases[0] } else { "-" }
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-parallel-heartbeat-check" -f $Stage) -Doing ("parallel {0} heartbeat-check running phases={1} completed={2}/{3} pass={4} interval={5}s" -f $stageSafe, $runningList, $completedCount, $totalCount, $Pass, $heartbeatCheckIntervalSeconds) -Phase $runningPhase -IsRunning $true -LogName "-"
+            $lastHeartbeatCheck = Get-Date
+        }
         if ($heartbeatDue) {
             $runningList = Join-IntList -Values @($runningPhases.ToArray()) -MaxItems 20
             $runningPhase = if ($runningPhases.Count -gt 0) { [string]$runningPhases[0] } else { "-" }
@@ -2316,6 +2348,7 @@ Write-Host ("Strict root:           {0}" -f $StrictRoot) -ForegroundColor White
 Write-Host ("Max outer loops:       {0}" -f $MaxOuterLoops) -ForegroundColor White
 Write-Host ("Auto-dev max cycles:   {0}" -f $AutoDevMaxCycles) -ForegroundColor White
 Write-Host ("Heartbeat (seconds):   {0}" -f $HeartbeatSeconds) -ForegroundColor White
+Write-Host ("Heartbeat check (sec): {0}" -f $HeartbeatCheckSeconds) -ForegroundColor White
 Write-Host ("Preflight max (sec):   {0}" -f $PreflightMaxSeconds) -ForegroundColor White
 Write-Host ("Status log:            {0}" -f $script:ResolvedStatusPath) -ForegroundColor DarkGray
 Write-Host ("Target metrics:        Health=100, Drift=0, Unmapped=0") -ForegroundColor White
