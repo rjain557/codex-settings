@@ -25,10 +25,10 @@ Expected argument shape from source: [area filter].
 Load and follow these referenced artifacts first:
 - @.planning/STATE.md
 - @.planning/ROADMAP.md
-- @C:/Users/rjain/.codex/get-shit-done/workflows/check-todos.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/check-todos.md
 Then execute this process:
 ```text
-**Follow the check-todos workflow** from `@C:/Users/rjain/.codex/get-shit-done/workflows/check-todos.md`.
+**Follow the check-todos workflow** from `@C:/Users/rjain/.claude/get-shit-done/workflows/check-todos.md`.
 
 The workflow handles all logic including:
 1. Todo existence checking
@@ -49,6 +49,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\check-todos.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\check-todos.md

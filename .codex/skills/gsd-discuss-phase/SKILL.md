@@ -34,8 +34,8 @@ Phase number: <parsed-arguments> (required)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/discuss-phase.md
-- @C:/Users/rjain/.codex/get-shit-done/templates/context.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/discuss-phase.md
+- @C:/Users/rjain/.claude/get-shit-done/templates/context.md
 Then execute this process:
 ```text
 1. Validate phase number (error if missing or not in roadmap)
@@ -68,7 +68,7 @@ Generate 3-4 **phase-specific** gray areas, not generic categories.
 - If more â†’ ask 4 more, check again
 - After all areas â†’ "Ready to create context?"
 
-**Do NOT ask about (Codex handles these):**
+**Do NOT ask about (Claude handles these):**
 - Technical implementation
 - Architecture choices
 - Performance concerns
@@ -83,6 +83,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\discuss-phase.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\discuss-phase.md

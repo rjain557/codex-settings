@@ -23,10 +23,10 @@ No required positional arguments. If the request lacks needed context, ask conci
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/update.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/update.md
 Then execute this process:
 ```text
-**Follow the update workflow** from `@C:/Users/rjain/.codex/get-shit-done/workflows/update.md`.
+**Follow the update workflow** from `@C:/Users/rjain/.claude/get-shit-done/workflows/update.md`.
 
 The workflow handles all logic including:
 1. Installed version detection (local/global)
@@ -47,6 +47,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\update.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\update.md

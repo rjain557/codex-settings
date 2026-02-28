@@ -34,4 +34,3 @@ Optional flags:
 - Keep operation phase-scoped.
 - Do not execute code changes in this skill.
 - Do not skip file-based evidence; research must be written to disk.
-

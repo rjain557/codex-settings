@@ -30,11 +30,11 @@ Phase: <parsed-arguments>
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/execute-phase.md
-- @C:/Users/rjain/.codex/get-shit-done/references/ui-brand.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/execute-phase.md
+- @C:/Users/rjain/.claude/get-shit-done/references/ui-brand.md
 Then execute this process:
 ```text
-Execute the execute-phase workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/execute-phase.md end-to-end.
+Execute the execute-phase workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/execute-phase.md end-to-end.
 Preserve all workflow gates (wave execution, checkpoint handling, verification, state updates, routing).
 ```
 
@@ -46,6 +46,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\execute-phase.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\execute-phase.md

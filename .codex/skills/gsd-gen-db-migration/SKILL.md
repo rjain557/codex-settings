@@ -32,10 +32,10 @@ Target: <parsed-arguments> (optional flags)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/gen-db-migration.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/gen-db-migration.md
 Then execute this process:
 ```text
-Execute the gen-db-migration workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-db-migration.md end-to-end.
+Execute the gen-db-migration workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-db-migration.md end-to-end.
 Scan existing db/sql/ files for current schema state. Ask migration scope and target database. Generate idempotent scripts with IF EXISTS guards and matching rollback scripts.
 ```
 
@@ -47,6 +47,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\gen-db-migration.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\gen-db-migration.md

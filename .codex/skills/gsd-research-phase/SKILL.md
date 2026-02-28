@@ -26,6 +26,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 - Ambiguities: Source is minimal and omits detailed steps; infer from mission text and nearby GSD command conventions.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\research-phase.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\research-phase.md

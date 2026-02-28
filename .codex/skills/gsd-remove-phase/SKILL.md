@@ -26,10 +26,10 @@ Phase: <parsed-arguments>
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/remove-phase.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/remove-phase.md
 Then execute this process:
 ```text
-Execute the remove-phase workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/remove-phase.md end-to-end.
+Execute the remove-phase workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/remove-phase.md end-to-end.
 Preserve all validation gates (future phase check, work check), renumbering logic, and commit.
 ```
 
@@ -41,6 +41,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\remove-phase.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\remove-phase.md

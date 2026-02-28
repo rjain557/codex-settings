@@ -32,7 +32,7 @@ Check for .planning/STATE.md - loads context if project already initialized
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/map-codebase.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/map-codebase.md
 Then execute this process:
 ```text
 1. Check if .planning/codebase/ already exists (offer to refresh or skip)
@@ -56,6 +56,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\map-codebase.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\map-codebase.md

@@ -11,7 +11,7 @@ The user chooses the data source:
 - **DB-Direct**: Server calls stored procedures via Dapper (SP-Only pattern)
 - **Hybrid**: Mix of API and direct SP calls
 
-Default transport: stdio (for Codex Desktop/Code). Optionally adds SSE or Streamable HTTP.
+Default transport: stdio (for Claude Desktop/Code). Optionally adds SSE or Streamable HTTP.
 
 # When to use
 Use when the user requests the original gsd:gen-mcp-server flow (for example: $gsd-gen-mcp-server).
@@ -31,10 +31,10 @@ Target: <parsed-arguments> (optional flags)
 
 # Workflow
 Load and follow these referenced artifacts first:
-- @C:/Users/rjain/.codex/get-shit-done/workflows/gen-mcp-server.md
+- @C:/Users/rjain/.claude/get-shit-done/workflows/gen-mcp-server.md
 Then execute this process:
 ```text
-Execute the gen-mcp-server workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-mcp-server.md end-to-end.
+Execute the gen-mcp-server workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-mcp-server.md end-to-end.
 Ask the data source and transport questions before generating. Auto-discover tools from OpenAPI spec and stored procedures.
 ```
 
@@ -46,6 +46,5 @@ Produce the artifacts specified by the workflow and summarize created/updated fi
 - Do not skip validation or checkpoint gates described in referenced workflows.
 - If required context is missing, ask focused questions (one small batch) and proceed after answers.
 
-# Source (path to original Codex command file)
-- C:\Users\rjain\.codex\commands\gsd\gen-mcp-server.md
-
+# Source (path to original Claude command file)
+- C:\Users\rjain\.claude\commands\gsd\gen-mcp-server.md
