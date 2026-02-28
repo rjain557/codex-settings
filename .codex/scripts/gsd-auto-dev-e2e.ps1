@@ -1629,6 +1629,19 @@ function Invoke-GlobalSkillMonitored {
     $monitorStart = Get-Date
     $trackedSubstageSeen = $false
     $forcedExitCode = $null
+    $stageHint = if ([string]::IsNullOrWhiteSpace($Stage)) { "" } else { ([string]$Stage -replace '\s+', '-').ToLowerInvariant() }
+
+    # When this invocation is already a specific tracked stage, treat it as active immediately.
+    # This avoids false preflight stalls for quiet-but-legitimate long-running execute/review calls.
+    if ($trackedSubstages -contains $stageHint) {
+        $activeSubstage = $stageHint
+        $trackedSubstageSeen = $true
+        $seedPending = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+        $substageEntryPending[$activeSubstage] = @($seedPending)
+        if ($activeSubstage -eq "execute") {
+            $lastExecutePendingSnapshot = @($seedPending)
+        }
+    }
 
     while (-not $proc.HasExited) {
         $sub = Get-LogSubstageSnapshot -LogFile $LogFile -FallbackPhase $lastObservedPhase
