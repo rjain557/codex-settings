@@ -17,6 +17,9 @@ param(
     [int]$HeartbeatSeconds = 60,
     [int]$HeartbeatCheckSeconds = 30,
     [int]$PreflightMaxSeconds = 180,
+    [bool]$AutoRecoverOnStop = $true,
+    [int]$AutoRecoverMaxRestarts = 40,
+    [int]$AutoRecoverDelaySeconds = 15,
     [switch]$ProgressToConsole = $false,
     [switch]$AllowRun = $false,
     [switch]$OpenWindow,
@@ -155,6 +158,7 @@ if ($OpenWindow) {
     $statusEsc = $StatusFile.Replace("'", "''")
     $reviewRootEsc = $ReviewRootRelative.Replace("'", "''")
     $strictLiteral = if ($StrictRoot) { '$true' } else { '$false' }
+    $autoRecoverLiteral = if ($AutoRecoverOnStop) { '$true' } else { '$false' }
     $progressToConsoleLiteral = if ($ProgressToConsole) { '$true' } else { '$false' }
     $allowRunLiteral = if ($AllowRun) { '$true' } else { '$false' }
     $summaryLine = ""
@@ -181,13 +185,55 @@ if ($OpenWindow) {
     HeartbeatSeconds = $HeartbeatSeconds
     HeartbeatCheckSeconds = $HeartbeatCheckSeconds
     PreflightMaxSeconds = $PreflightMaxSeconds
+    AutoRecoverOnStop = $autoRecoverLiteral
+    AutoRecoverMaxRestarts = $AutoRecoverMaxRestarts
+    AutoRecoverDelaySeconds = $AutoRecoverDelaySeconds
     StrictRoot = $strictLiteral
     ProgressToConsole = $progressToConsoleLiteral
     AllowRun = $allowRunLiteral
 $summaryLine
 }
 $dryLine
-& '$selfEsc' @params
+`$maxRestarts = [Math]::Max(0, [int]`$params.AutoRecoverMaxRestarts)
+`$restartDelay = [Math]::Max(1, [int]`$params.AutoRecoverDelaySeconds)
+`$resolvedStatusPath = if ([System.IO.Path]::IsPathRooted(`$params.StatusFile)) { `$params.StatusFile } else { Join-Path `$params.ProjectRoot `$params.StatusFile }
+
+function Write-SupervisorStatus {
+    param(
+        [string]`$Message
+    )
+    try {
+        `$statusDir = Split-Path -Parent `$resolvedStatusPath
+        if (-not [string]::IsNullOrWhiteSpace(`$statusDir) -and -not (Test-Path `$statusDir)) {
+            New-Item -ItemType Directory -Path `$statusDir -Force | Out-Null
+        }
+        Add-Content -Path `$resolvedStatusPath -Value ("[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), `$Message)
+    } catch { }
+}
+
+`$attempt = 1
+`$restartsUsed = 0
+while (`$true) {
+    Write-SupervisorStatus -Message ("supervisor-start attempt={0} auto_recover={1} max_restarts={2} delay_seconds={3}" -f `$attempt, $autoRecoverLiteral, `$maxRestarts, `$restartDelay)
+    & '$selfEsc' @params
+    `$exitCode = if (`$null -eq `$LASTEXITCODE) { 1 } else { [int]`$LASTEXITCODE }
+
+    if (`$exitCode -eq 0) {
+        Write-SupervisorStatus -Message ("supervisor-success attempt={0} exit={1}" -f `$attempt, `$exitCode)
+        exit 0
+    }
+
+    Write-SupervisorStatus -Message ("supervisor-stop attempt={0} exit={1} action=restart_evaluate" -f `$attempt, `$exitCode)
+    if ((-not $autoRecoverLiteral) -or (`$restartsUsed -ge `$maxRestarts)) {
+        Write-SupervisorStatus -Message ("supervisor-giveup attempt={0} exit={1} restarts_used={2}" -f `$attempt, `$exitCode, `$restartsUsed)
+        exit `$exitCode
+    }
+
+    `$restartsUsed++
+    Write-SupervisorStatus -Message ("supervisor-restart attempt={0} next_attempt={1} restarts_used={2}/{3} sleep_seconds={4}" -f `$attempt, (`$attempt + 1), `$restartsUsed, `$maxRestarts, `$restartDelay)
+    Start-Sleep -Seconds `$restartDelay
+    `$attempt++
+}
 "@
     Set-Content -Path $launcherPath -Value $launcherContent -Encoding UTF8
 
@@ -2350,6 +2396,9 @@ Write-Host ("Auto-dev max cycles:   {0}" -f $AutoDevMaxCycles) -ForegroundColor 
 Write-Host ("Heartbeat (seconds):   {0}" -f $HeartbeatSeconds) -ForegroundColor White
 Write-Host ("Heartbeat check (sec): {0}" -f $HeartbeatCheckSeconds) -ForegroundColor White
 Write-Host ("Preflight max (sec):   {0}" -f $PreflightMaxSeconds) -ForegroundColor White
+Write-Host ("Auto recover on stop:  {0}" -f $AutoRecoverOnStop) -ForegroundColor White
+Write-Host ("Max auto restarts:     {0}" -f $AutoRecoverMaxRestarts) -ForegroundColor White
+Write-Host ("Restart delay (sec):   {0}" -f $AutoRecoverDelaySeconds) -ForegroundColor White
 Write-Host ("Status log:            {0}" -f $script:ResolvedStatusPath) -ForegroundColor DarkGray
 Write-Host ("Target metrics:        Health=100, Drift=0, Unmapped=0") -ForegroundColor White
 
