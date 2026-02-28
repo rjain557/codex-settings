@@ -2236,99 +2236,130 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
         $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
         Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "cycle-start" -Doing ("starting cycle {0}" -f $cycle) -Phase $phaseText -IsRunning $false -LogName "-"
 
+        $cycleAbort = $false
         if ($pendingBefore.Count -gt 0) {
-            $researchTargets = @(Get-PhasesNeedingResearch -PhaseIds $pendingBefore)
-            if ($researchTargets.Count -gt 0) {
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-enter" -Doing ("entering research phases={0}" -f (Join-IntList -Values $researchTargets -MaxItems 12)) -Phase $phaseText -IsRunning $true -LogName "-"
-                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research" -MapType "research-target" -PhaseIds $researchTargets -LogName "-"
-                foreach ($phaseId in $researchTargets) {
-                    $researchLog = Join-Path $script:ResolvedLogDir ("batch-research-cycle-{0:D3}-phase-{1}-{2}.log" -f $cycle, $phaseId, $stamp)
-                    $lastAutoDevLog = $researchLog
-                    $prompt = New-GsdSkillPrompt -CommandLine ("`$gsd-batch-research {0}" -f $phaseId) -Purpose ("research phase {0}" -f $phaseId)
-                    $researchExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $researchLog -Stage "research" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-research {0}" -f $phaseId)
-                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("research-phase-exit-{0}" -f $researchExit) -Doing ("research phase={0} complete" -f $phaseId) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $researchLog)
+            $phasePass = 0
+            $maxPhasePasses = [Math]::Max(5, [Math]::Min(200, ($AutoDevMaxCycles * 4)))
+            $pendingForPass = @($pendingBefore)
+
+            while ($pendingForPass.Count -gt 0) {
+                $phasePass++
+                $phaseText = [string]$pendingForPass[0]
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-pass-start" -Doing ("starting phase pass {0} pending={1}" -f $phasePass, (Join-IntList -Values $pendingForPass -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
+
+                if ($phasePass -gt $maxPhasePasses) {
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-pass-limit-hit" -Doing ("phase pass limit reached ({0}); stopping to avoid infinite requeue loop; remaining_pending={1}" -f $maxPhasePasses, (Join-IntList -Values $pendingForPass -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
+                    $stopReason = "phase-pass-limit-hit"
+                    $cycleAbort = $true
+                    break
                 }
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-complete" -Doing ("completed research phases={0}" -f (Join-IntList -Values $researchTargets -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
-            } else {
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-skip" -Doing ("research already complete for pending phases={0}" -f (Join-IntList -Values $pendingBefore -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
-            }
 
-            $pendingBeforePlan = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
-            $planTargets = @(Get-PhasesNeedingPlan -PhaseIds $pendingBeforePlan)
-            if ($planTargets.Count -gt 0) {
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-enter" -Doing ("entering planning phases={0}" -f (Join-IntList -Values $planTargets -MaxItems 12)) -Phase $phaseText -IsRunning $true -LogName "-"
-                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning" -MapType "planning-target" -PhaseIds $planTargets -LogName "-"
-                foreach ($phaseId in $planTargets) {
-                    $planLog = Join-Path $script:ResolvedLogDir ("batch-plan-cycle-{0:D3}-phase-{1}-{2}.log" -f $cycle, $phaseId, $stamp)
-                    $lastAutoDevLog = $planLog
-                    $prompt = New-GsdSkillPrompt -CommandLine ("`$gsd-batch-plan {0}" -f $phaseId) -Purpose ("plan phase {0}" -f $phaseId)
-                    $planExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $planLog -Stage "planning" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-plan {0}" -f $phaseId)
-                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("planning-phase-exit-{0}" -f $planExit) -Doing ("planning phase={0} complete" -f $phaseId) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $planLog)
-                }
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-complete" -Doing ("completed planning phases={0}" -f (Join-IntList -Values $planTargets -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
-            } else {
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-skip" -Doing ("planning already complete for pending phases={0}" -f (Join-IntList -Values $pendingBeforePlan -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
-            }
-
-            $pendingAfterPlan = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
-            $completedPrematurely = @($pendingBeforePlan | Where-Object { $pendingAfterPlan -notcontains $_ } | Sort-Object -Unique)
-            if ($completedPrematurely.Count -gt 0) {
-                $reopened = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds $completedPrematurely
-                if ($reopened) {
-                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-reopen-no-execute" -Doing ("reopened phases marked complete before execute: {0}" -f (Join-IntList -Values $completedPrematurely -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
-                }
-            }
-
-            $executeTargets = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
-            if ($executeTargets.Count -gt 0) {
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-enter" -Doing ("entering execute phases={0}" -f (Join-IntList -Values $executeTargets -MaxItems 12)) -Phase $phaseText -IsRunning $true -LogName "-"
-                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "execute-target" -PhaseIds $executeTargets -LogName "-"
-
-                foreach ($phaseId in $executeTargets) {
-                    $findingRefsList = @(Get-PhaseFindingReferences -PhaseId $phaseId)
-                    $findingRefs = Join-StringList -Values $findingRefsList -MaxItems 8
-                    $phaseCommitBefore = Get-CommitDeltaSinceStart
-                    $phaseCodeFilesBefore = Get-CodeFileWorkingSetCount
-                    $phaseHeadBefore = Get-GitHeadWithRetry -RepoPath $script:ResolvedProjectRoot -AllowMissing
-                    $phaseWorkingSetBefore = @(Get-CodeFileWorkingSetPaths)
-
-                    $execLog = Join-Path $script:ResolvedLogDir ("batch-execute-cycle-{0:D3}-phase-{1}-{2}.log" -f $cycle, $phaseId, $stamp)
-                    $lastAutoDevLog = $execLog
-                    $prompt = New-GsdSkillPrompt -CommandLine ("`$gsd-batch-execute {0}" -f $phaseId) -Purpose ("execute phase {0}" -f $phaseId)
-                    $execExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $execLog -Stage "execute" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-execute {0}" -f $phaseId)
-
-                    $signal = Get-ExecuteCodeSignal -PreviousCommitCount $phaseCommitBefore -PreviousCodeFileCount $phaseCodeFilesBefore
-                    $codeEvidence = Get-PhaseExecutionCodeEvidence -StartHead $phaseHeadBefore -BeforeWorkingSet $phaseWorkingSetBefore
-                    $changedFilesText = Join-StringList -Values @($codeEvidence.ChangedCodeFiles) -MaxItems 8
-                    $codedFindingsText = if ($codeEvidence.CodeGenerated) { $findingRefs } else { "none" }
-                    $uncodedFindingsText = if ($codeEvidence.CodeGenerated) { "none" } else { $findingRefs }
-                    $findingCodeEvidence = Get-FindingCodeEvidenceText -FindingRefs $findingRefsList -ChangedCodeFiles @($codeEvidence.ChangedCodeFiles)
-
-                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-finding-remediation-check" -Doing ("phase {0} remediation-check findings={1} coded_findings={2} uncoded_findings={3} code_files_changed={4} finding_code_evidence={5} new_commits={6} code_files_total={7}" -f $phaseId, $findingRefs, $codedFindingsText, $uncodedFindingsText, $changedFilesText, $findingCodeEvidence, $signal.NewCommits, $signal.CodeFilesNow) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
-
-                    $pendingNow = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
-                    $phaseCompleted = ($pendingNow -notcontains $phaseId)
-
-                    if (-not $codeEvidence.CodeGenerated) {
-                        $reset = Reset-PhaseForResearchPlan -PhaseId $phaseId
-                        $phaseCompleted = $false
-                        $removedText = Join-StringList -Values @($reset.RemovedArtifacts) -MaxItems 8
-                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reset-research-plan" -Doing ("phase {0} reset for rework: no coding evidence for findings={1}; removed_artifacts={2}; reopened={3}; requeue_path=research->plan->execute(next-cycle)" -f $phaseId, $findingRefs, $removedText, $reset.Reopened) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                $researchTargets = @(Get-PhasesNeedingResearch -PhaseIds $pendingForPass)
+                if ($researchTargets.Count -gt 0) {
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-enter" -Doing ("entering research phases={0} pass={1}" -f (Join-IntList -Values $researchTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $true -LogName "-"
+                    Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research" -MapType "research-target" -PhaseIds $researchTargets -LogName "-"
+                    foreach ($phaseId in $researchTargets) {
+                        $researchLog = Join-Path $script:ResolvedLogDir ("batch-research-cycle-{0:D3}-pass-{1:D2}-phase-{2}-{3}.log" -f $cycle, $phasePass, $phaseId, $stamp)
+                        $lastAutoDevLog = $researchLog
+                        $prompt = New-GsdSkillPrompt -CommandLine ("`$gsd-batch-research {0}" -f $phaseId) -Purpose ("research phase {0}" -f $phaseId)
+                        $researchExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $researchLog -Stage "research" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-research {0}" -f $phaseId)
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("research-phase-exit-{0}" -f $researchExit) -Doing ("research phase={0} complete pass={1}" -f $phaseId, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $researchLog)
                     }
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-complete" -Doing ("completed research phases={0} pass={1}" -f (Join-IntList -Values $researchTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
+                } else {
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-skip" -Doing ("research already complete for pending phases={0} pass={1}" -f (Join-IntList -Values $pendingForPass -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
+                }
 
-                    if ($phaseCompleted) {
-                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute complete; marking phase complete code_generated=yes new_commits={1} code_files={2} code_files_changed={3} findings={4} finding_code_evidence={5}" -f $phaseId, $signal.NewCommits, $signal.CodeFilesNow, $changedFilesText, $findingRefs, $findingCodeEvidence) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
-                        Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds @($phaseId) -LogName (Split-Path -Leaf $execLog) -Force
-                    } else {
-                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute incomplete; remains pending code_generated={1} new_commits={2} code_files={3} code_files_changed={4} findings={5} uncoded_findings={6}" -f $phaseId, $(if ($codeEvidence.CodeGenerated) { "yes" } else { "no" }), $signal.NewCommits, $signal.CodeFilesNow, $changedFilesText, $findingRefs, $uncodedFindingsText) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                $pendingBeforePlan = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                $planTargets = @(Get-PhasesNeedingPlan -PhaseIds $pendingBeforePlan)
+                if ($planTargets.Count -gt 0) {
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-enter" -Doing ("entering planning phases={0} pass={1}" -f (Join-IntList -Values $planTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $true -LogName "-"
+                    Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning" -MapType "planning-target" -PhaseIds $planTargets -LogName "-"
+                    foreach ($phaseId in $planTargets) {
+                        $planLog = Join-Path $script:ResolvedLogDir ("batch-plan-cycle-{0:D3}-pass-{1:D2}-phase-{2}-{3}.log" -f $cycle, $phasePass, $phaseId, $stamp)
+                        $lastAutoDevLog = $planLog
+                        $prompt = New-GsdSkillPrompt -CommandLine ("`$gsd-batch-plan {0}" -f $phaseId) -Purpose ("plan phase {0}" -f $phaseId)
+                        $planExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $planLog -Stage "planning" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-plan {0}" -f $phaseId)
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("planning-phase-exit-{0}" -f $planExit) -Doing ("planning phase={0} complete pass={1}" -f $phaseId, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $planLog)
+                    }
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-complete" -Doing ("completed planning phases={0} pass={1}" -f (Join-IntList -Values $planTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
+                } else {
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-skip" -Doing ("planning already complete for pending phases={0} pass={1}" -f (Join-IntList -Values $pendingBeforePlan -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
+                }
+
+                $pendingAfterPlan = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                $completedPrematurely = @($pendingBeforePlan | Where-Object { $pendingAfterPlan -notcontains $_ } | Sort-Object -Unique)
+                if ($completedPrematurely.Count -gt 0) {
+                    $reopened = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds $completedPrematurely
+                    if ($reopened) {
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-reopen-no-execute" -Doing ("reopened phases marked complete before execute: {0} pass={1}" -f (Join-IntList -Values $completedPrematurely -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
                     }
                 }
 
-                $pendingAfterExecute = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-complete" -Doing ("execute stage complete remaining_pending={0}" -f (Join-IntList -Values $pendingAfterExecute -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
+                $executeTargets = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                if ($executeTargets.Count -gt 0) {
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-enter" -Doing ("entering execute phases={0} pass={1}" -f (Join-IntList -Values $executeTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $true -LogName "-"
+                    Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "execute-target" -PhaseIds $executeTargets -LogName "-"
+
+                    foreach ($phaseId in $executeTargets) {
+                        $findingRefsList = @(Get-PhaseFindingReferences -PhaseId $phaseId)
+                        $findingRefs = Join-StringList -Values $findingRefsList -MaxItems 8
+                        $phaseCommitBefore = Get-CommitDeltaSinceStart
+                        $phaseCodeFilesBefore = Get-CodeFileWorkingSetCount
+                        $phaseHeadBefore = Get-GitHeadWithRetry -RepoPath $script:ResolvedProjectRoot -AllowMissing
+                        $phaseWorkingSetBefore = @(Get-CodeFileWorkingSetPaths)
+
+                        $execLog = Join-Path $script:ResolvedLogDir ("batch-execute-cycle-{0:D3}-pass-{1:D2}-phase-{2}-{3}.log" -f $cycle, $phasePass, $phaseId, $stamp)
+                        $lastAutoDevLog = $execLog
+                        $prompt = New-GsdSkillPrompt -CommandLine ("`$gsd-batch-execute {0}" -f $phaseId) -Purpose ("execute phase {0}" -f $phaseId)
+                        $execExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $execLog -Stage "execute" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-execute {0}" -f $phaseId)
+
+                        $signal = Get-ExecuteCodeSignal -PreviousCommitCount $phaseCommitBefore -PreviousCodeFileCount $phaseCodeFilesBefore
+                        $codeEvidence = Get-PhaseExecutionCodeEvidence -StartHead $phaseHeadBefore -BeforeWorkingSet $phaseWorkingSetBefore
+                        $changedFilesText = Join-StringList -Values @($codeEvidence.ChangedCodeFiles) -MaxItems 8
+                        $codedFindingsText = if ($codeEvidence.CodeGenerated) { $findingRefs } else { "none" }
+                        $uncodedFindingsText = if ($codeEvidence.CodeGenerated) { "none" } else { $findingRefs }
+                        $findingCodeEvidence = Get-FindingCodeEvidenceText -FindingRefs $findingRefsList -ChangedCodeFiles @($codeEvidence.ChangedCodeFiles)
+
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-finding-remediation-check" -Doing ("phase {0} remediation-check findings={1} coded_findings={2} uncoded_findings={3} code_files_changed={4} finding_code_evidence={5} new_commits={6} code_files_total={7} pass={8}" -f $phaseId, $findingRefs, $codedFindingsText, $uncodedFindingsText, $changedFilesText, $findingCodeEvidence, $signal.NewCommits, $signal.CodeFilesNow, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+
+                        $pendingNow = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                        $phaseCompleted = ($pendingNow -notcontains $phaseId)
+
+                        if (-not $codeEvidence.CodeGenerated) {
+                            $reset = Reset-PhaseForResearchPlan -PhaseId $phaseId
+                            $phaseCompleted = $false
+                            $removedText = Join-StringList -Values @($reset.RemovedArtifacts) -MaxItems 8
+                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reset-research-plan" -Doing ("phase {0} reset for rework: no coding evidence for findings={1}; removed_artifacts={2}; reopened={3}; requeue_path=research->plan->execute(same-cycle)" -f $phaseId, $findingRefs, $removedText, $reset.Reopened) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                        }
+
+                        if ($phaseCompleted) {
+                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute complete; marking phase complete code_generated=yes new_commits={1} code_files={2} code_files_changed={3} findings={4} finding_code_evidence={5} pass={6}" -f $phaseId, $signal.NewCommits, $signal.CodeFilesNow, $changedFilesText, $findingRefs, $findingCodeEvidence, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                            Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds @($phaseId) -LogName (Split-Path -Leaf $execLog) -Force
+                        } else {
+                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute incomplete; remains pending code_generated={1} new_commits={2} code_files={3} code_files_changed={4} findings={5} uncoded_findings={6} pass={7}" -f $phaseId, $(if ($codeEvidence.CodeGenerated) { "yes" } else { "no" }), $signal.NewCommits, $signal.CodeFilesNow, $changedFilesText, $findingRefs, $uncodedFindingsText, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                        }
+                    }
+
+                    $pendingAfterExecute = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-complete" -Doing ("execute stage complete remaining_pending={0} pass={1}" -f (Join-IntList -Values $pendingAfterExecute -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
+                    $pendingForPass = @($pendingAfterExecute)
+                } else {
+                    $pendingForPass = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                }
+
+                if ($pendingForPass.Count -gt 0) {
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-pass-requeue" -Doing ("requeue same-cycle pass with pending phases={0} next_pass={1}" -f (Join-IntList -Values $pendingForPass -MaxItems 12), ($phasePass + 1)) -Phase ([string]$pendingForPass[0]) -IsRunning $false -LogName "-"
+                } else {
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-pass-complete" -Doing ("all pending phases completed within cycle after pass={0}" -f $phasePass) -Phase "-" -IsRunning $false -LogName "-"
+                }
             }
         } else {
             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "no-pending-phases" -Doing "no pending phases before stage execution" -Phase "-" -IsRunning $false -LogName "-"
+        }
+
+        if ($cycleAbort) {
+            break
         }
 
         $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
