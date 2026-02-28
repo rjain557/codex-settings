@@ -20,14 +20,14 @@ Output: docs/review/ folder with executive summary, full report, developer hando
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/code-review.md
-@C:/Users/rjain/.codex/agents/gsd-code-reviewer.md
-@C:/Users/rjain/.codex/get-shit-done/references/ui-brand.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/code-review.md
+@C:/Users/rjain/.claude/agents/gsd-code-reviewer.md
+@C:/Users/rjain/.claude/get-shit-done/references/ui-brand.md
 </execution_context>
 
 <context>
 Options: $ARGUMENTS
-- (no flags): Full review - auto-detect all components, full traceability + contract analysis
+- (no flags): Full review — auto-detect all components, full traceability + contract analysis
 - --layer=frontend: Frontend layer only
 - --layer=backend: Backend layer only
 - --layer=database: Database layer only
@@ -38,8 +38,8 @@ Options: $ARGUMENTS
 - --layer=agent: Remote agent only
 - --skip-build: Skip build verification step (faster, but misses build blockers)
 
-@.planning/STATE.md (if exists - project context)
-@.planning/ROADMAP.md (if exists - phase context)
+@.planning/STATE.md (if exists — project context)
+@.planning/ROADMAP.md (if exists — phase context)
 </context>
 
 <process>
@@ -54,10 +54,10 @@ Determine review scope from $ARGUMENTS:
 ## 2. Load Context
 
 Read the workflow file for detailed execution steps:
-@C:/Users/rjain/.codex/get-shit-done/workflows/code-review.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/code-review.md
 
 Read the agent definition for orchestration role and finding format:
-@C:/Users/rjain/.codex/agents/gsd-code-reviewer.md
+@C:/Users/rjain/.claude/agents/gsd-code-reviewer.md
 
 If .planning/STATE.md exists, read for project context (current phase, recent work).
 
@@ -78,9 +78,9 @@ Follow the workflow steps in order:
 - Wait for all to complete, collect summary counts
 
 ### Wave 2: Cross-Cutting Analysis (parallel agents, full review only)
-- Traceability Matrix Builder -> `docs/review/TRACEABILITY-MATRIX.md`
-- Contract Alignment Checker -> `docs/review/CONTRACT-ALIGNMENT.md`
-- Dead Code Analyzer -> `docs/review/DEAD-CODE.md`
+- Traceability Matrix Builder → `docs/review/TRACEABILITY-MATRIX.md`
+- Contract Alignment Checker → `docs/review/CONTRACT-ALIGNMENT.md`
+- Dead Code Analyzer → `docs/review/DEAD-CODE.md`
 - Wait for all to complete
 
 ### Wave 3: Build Verification (mandatory unless --skip-build)
@@ -92,17 +92,17 @@ Follow the workflow steps in order:
 - Read all findings from sub-agent output files
 - Calculate health score (100 - penalties per severity)
 - Generate 4 reports:
-  1. `docs/review/EXECUTIVE-SUMMARY.md` - Health score, top risks
-  2. `docs/review/FULL-REPORT.md` - All findings by severity
-  3. `docs/review/DEVELOPER-HANDOFF.md` - Actionable tasks
-  4. `docs/review/PRIORITIZED-TASKS.md` - Ordered list for /gsd:plan-phase
+  1. `docs/review/EXECUTIVE-SUMMARY.md` — Health score, top risks
+  2. `docs/review/FULL-REPORT.md` — All findings by severity
+  3. `docs/review/DEVELOPER-HANDOFF.md` — Actionable tasks
+  4. `docs/review/PRIORITIZED-TASKS.md` — Ordered list for /gsd:plan-phase
 
 ## 4. Present Results
 
 Display executive summary:
 
 ```
-Code Review Complete - Health: {score}/100 (Grade: {grade})
+Code Review Complete — Health: {score}/100 (Grade: {grade})
 
 Components: {N} reviewed
 Findings: {B} Blocker | {H} High | {M} Medium | {L} Low

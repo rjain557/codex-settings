@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:gen-monitoring
 description: Generate monitoring infrastructure (health checks, dashboards, alerts, runbooks)
 argument-hint: "[--platform <appinsights|grafana|datadog>] [--alerts <email|slack|teams|pagerduty>]"
@@ -24,7 +24,7 @@ Generates health check endpoints, custom application metrics, monitoring dashboa
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/gen-monitoring.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/gen-monitoring.md
 </execution_context>
 
 <context>
@@ -34,7 +34,6 @@ Target: $ARGUMENTS (optional flags)
 </context>
 
 <process>
-Execute the gen-monitoring workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-monitoring.md end-to-end.
+Execute the gen-monitoring workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-monitoring.md end-to-end.
 Detect existing OpenTelemetry config, ask platform and alert channels, generate health checks, metrics, dashboards, alert rules, and runbooks.
 </process>
-

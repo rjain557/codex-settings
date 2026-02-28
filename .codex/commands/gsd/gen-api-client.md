@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:gen-api-client
 description: Generate typed API client SDKs from OpenAPI spec (TypeScript, C#, Swift, Kotlin)
 argument-hint: "[typescript|csharp|swift|kotlin] [--output <dir>] [--name <client-name>]"
@@ -26,7 +26,7 @@ All clients share the same contract with auth interceptors, tenant header inject
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/gen-api-client.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/gen-api-client.md
 </execution_context>
 
 <context>
@@ -37,7 +37,6 @@ Target: $ARGUMENTS (optional: typescript, csharp, swift, kotlin, or blank for al
 </context>
 
 <process>
-Execute the gen-api-client workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-api-client.md end-to-end.
+Execute the gen-api-client workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-api-client.md end-to-end.
 Parse OpenAPI spec, ask target platforms and features, generate typed clients with auth and tenant interceptors.
 </process>
-

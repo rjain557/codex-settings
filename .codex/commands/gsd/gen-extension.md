@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:gen-extension
 description: Generate cross-browser extension (Chrome/Edge/Safari) with Manifest V3
 argument-hint: "[chrome|edge|safari] [--name <extension-name>] [--api-url <url>]"
@@ -26,7 +26,7 @@ Default: generates for all three browsers. Pass a browser name to target one.
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/gen-extension.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/gen-extension.md
 </execution_context>
 
 <context>
@@ -37,7 +37,6 @@ Target: $ARGUMENTS (optional: chrome, edge, safari, or blank for all)
 </context>
 
 <process>
-Execute the gen-extension workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-extension.md end-to-end.
+Execute the gen-extension workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-extension.md end-to-end.
 Ask the extension type and UI framework questions before generating. Generate shared core + browser-specific manifests and build targets.
 </process>
-

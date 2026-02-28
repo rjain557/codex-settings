@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:gen-notification
 description: Generate multi-channel notification system (in-app, email, push, SMS)
 argument-hint: "[--channels <in-app|email|push|sms>] [--provider <sendgrid|smtp|ses>]"
@@ -26,7 +26,7 @@ Includes notification preferences (per user, per type, per channel), delivery tr
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/gen-notification.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/gen-notification.md
 </execution_context>
 
 <context>
@@ -37,7 +37,6 @@ Target: $ARGUMENTS (optional flags)
 </context>
 
 <process>
-Execute the gen-notification workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-notification.md end-to-end.
+Execute the gen-notification workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-notification.md end-to-end.
 Ask channel and provider selections. Generate full-stack notification system: database tables/SPs, service layer, controller, email templates, and frontend notification bell component.
 </process>
-

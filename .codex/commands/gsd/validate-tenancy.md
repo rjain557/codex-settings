@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:validate-tenancy
 description: Validate multi-tenancy isolation across all layers (SPs, repos, services, controllers)
 argument-hint: ""
@@ -21,7 +21,7 @@ No arguments needed -- this skill always scans everything exhaustively.
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/validate-tenancy.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/validate-tenancy.md
 </execution_context>
 
 <context>
@@ -31,7 +31,6 @@ No arguments needed -- this skill always scans everything exhaustively.
 </context>
 
 <process>
-Execute the validate-tenancy workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/validate-tenancy.md end-to-end.
+Execute the validate-tenancy workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/validate-tenancy.md end-to-end.
 Exhaustively scan all layers: tables, stored procedures, repositories, services, controllers, and frontend. Generate report with CRITICAL/WARNING/PASS findings.
 </process>
-

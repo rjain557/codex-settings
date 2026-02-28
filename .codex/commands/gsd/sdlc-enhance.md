@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:sdlc-enhance
 description: Run Phase F multi-agent enhancement pipeline (component detection + wave-based enhancement)
 argument-hint: "[--detect-only | --wave=N | --component=name]"
@@ -25,7 +25,7 @@ Orchestrator role: Parse flags, check prerequisites, spawn sdlc-enhancer agent, 
 
 <context>
 Flags: $ARGUMENTS
-- (no flags): Full Phase F â€” detect all components + run all waves
+- (no flags): Full Phase F — detect all components + run all waves
 - --detect-only: Component detection only (no enhancement, safe/read-only)
 - --wave=N: Execute specific wave only (1=DB, 2=API, 3=MCP, 4=Presentation, 5=Testing)
 - --component=name: Enhance specific component only (database, api, mcp, admin, web, agent)
@@ -40,8 +40,8 @@ Determine execution mode from $ARGUMENTS.
 ## 2. Check Prerequisites (skip for --detect-only)
 
 Verify Phase E contract artifacts exist:
-- docs/spec/openapi.yaml â€” needed for API and client enhancement
-- docs/spec/apitospmap.csv â€” needed for SP-Only verification
+- docs/spec/openapi.yaml — needed for API and client enhancement
+- docs/spec/apitospmap.csv — needed for SP-Only verification
 
 If missing: warn that frozen contracts are required for full enhancement. Suggest running Phase E or `/gsd:sdlc-gate E exit` first.
 
@@ -76,4 +76,3 @@ Offer next steps:
 - "Run `/gsd:sdlc-gate G entrance` to check Phase G readiness"
 
 </process>
-

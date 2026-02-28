@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:sdlc-gate
 description: Check entrance/exit criteria for an SDLC phase (A-R)
 argument-hint: "<phase-letter> [entrance|exit]"
@@ -74,4 +74,3 @@ If exit gate failed, include routing:
 > **Route to:** Phase {X} to resolve {issue type}
 
 </process>
-

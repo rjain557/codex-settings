@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:gen-mobile
 description: Generate cross-platform mobile app (iOS/Android) with React Native + Expo
 argument-hint: "[ios|android] [--name <app-name>] [--bundle-id <com.company.app>]"
@@ -25,7 +25,7 @@ Default: generates for both iOS and Android. Pass a platform name to target one.
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/gen-mobile.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/gen-mobile.md
 </execution_context>
 
 <context>
@@ -36,7 +36,6 @@ Target: $ARGUMENTS (optional: ios, android, or blank for both)
 </context>
 
 <process>
-Execute the gen-mobile workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-mobile.md end-to-end.
+Execute the gen-mobile workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-mobile.md end-to-end.
 Ask the app type and navigation pattern questions before generating. Generate Expo project with file-based routing, typed API client, and platform-specific configuration.
 </process>
-

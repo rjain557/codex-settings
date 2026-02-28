@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:sdlc-validate
 description: Run SpecSync contract validation (OpenAPI <-> API-SP Map <-> Controllers <-> DTOs <-> SPs)
 argument-hint: "[--full | --dto-only | --sp-only]"
@@ -76,4 +76,3 @@ Offer next steps:
 - "Run `/gsd:sdlc-gate G exit` to check Phase G readiness"
 
 </process>
-

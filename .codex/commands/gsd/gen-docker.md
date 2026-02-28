@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:gen-docker
 description: Generate Dockerfiles, docker-compose, and container orchestration config
 argument-hint: "[--components <api|spa|db|all>] [--registry <acr|dockerhub|ghcr>]"
@@ -19,11 +19,11 @@ Generate Docker infrastructure for your project. Creates multi-stage Dockerfiles
 The user chooses:
 - **Orchestration**: docker-compose only, docker-compose + Kubernetes, or Dockerfiles only
 
-Tailored to: ASP.NET Core 8 (multi-stage .NET SDK â†’ runtime), React/Vite (Node â†’ nginx), SQL Server (dev container with auto-init).
+Tailored to: ASP.NET Core 8 (multi-stage .NET SDK → runtime), React/Vite (Node → nginx), SQL Server (dev container with auto-init).
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/gen-docker.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/gen-docker.md
 </execution_context>
 
 <context>
@@ -33,7 +33,6 @@ Target: $ARGUMENTS (optional flags)
 </context>
 
 <process>
-Execute the gen-docker workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-docker.md end-to-end.
+Execute the gen-docker workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-docker.md end-to-end.
 Detect project components, generate optimized Dockerfiles with security best practices, and compose files for one-command local dev.
 </process>
-

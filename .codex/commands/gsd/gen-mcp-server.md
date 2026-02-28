@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:gen-mcp-server
 description: Generate MCP server from OpenAPI spec or stored procedures with stdio/SSE transports
 argument-hint: "[--name <server-name>] [--api-url <url>] [--db-direct]"
@@ -25,7 +25,7 @@ Default transport: stdio (for Claude Desktop/Code). Optionally adds SSE or Strea
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/gen-mcp-server.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/gen-mcp-server.md
 </execution_context>
 
 <context>
@@ -37,7 +37,6 @@ Target: $ARGUMENTS (optional flags)
 </context>
 
 <process>
-Execute the gen-mcp-server workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-mcp-server.md end-to-end.
+Execute the gen-mcp-server workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-mcp-server.md end-to-end.
 Ask the data source and transport questions before generating. Auto-discover tools from OpenAPI spec and stored procedures.
 </process>
-

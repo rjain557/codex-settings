@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:sdlc-compliance
 description: Validate HIPAA/SOC2/GDPR/PCI compliance implementation against actual code
 argument-hint: "[--standard <hipaa|soc2|gdpr|pci>] [--report-only] [--fix]"
@@ -26,7 +26,7 @@ Generates a compliance evidence report suitable for auditor review. Optionally a
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/sdlc-compliance.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/sdlc-compliance.md
 </execution_context>
 
 <context>
@@ -37,7 +37,6 @@ Target: $ARGUMENTS (optional flags)
 </context>
 
 <process>
-Execute the sdlc-compliance workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/sdlc-compliance.md end-to-end.
+Execute the sdlc-compliance workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/sdlc-compliance.md end-to-end.
 Read Phase A compliance declarations. Scan the full codebase for compliance patterns. Generate evidence report with pass/warn/fail per check and gap remediation steps.
 </process>
-

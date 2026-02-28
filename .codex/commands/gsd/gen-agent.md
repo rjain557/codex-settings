@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:gen-agent
 description: Generate cross-platform remote agent (Mac/Linux/Windows) with optional system tray UI
 argument-hint: "[mac|linux|windows] [--name <agent-name>] [--api-url <url>]"
@@ -25,7 +25,7 @@ Default: generates for all three platforms. Pass a platform name to target one.
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/gen-agent.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/gen-agent.md
 </execution_context>
 
 <context>
@@ -36,7 +36,6 @@ Target: $ARGUMENTS (optional: mac, linux, windows, or blank for all)
 </context>
 
 <process>
-Execute the gen-agent workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-agent.md end-to-end.
+Execute the gen-agent workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-agent.md end-to-end.
 Ask the UI mode question before generating. Generate shared core + platform-specific wrappers.
 </process>
-

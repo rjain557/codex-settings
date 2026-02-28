@@ -946,6 +946,88 @@ function Get-PendingPhasesText {
     return (Join-IntList -Values $pending -MaxItems $MaxItems)
 }
 
+function Get-PhasesNeedingResearch {
+    param([int[]]$PhaseIds)
+
+    $targets = @()
+    foreach ($phaseId in @($PhaseIds | Sort-Object -Unique)) {
+        $dir = Get-PhaseDirectoryPath -PhaseId $phaseId
+        if ([string]::IsNullOrWhiteSpace($dir) -or -not (Test-Path $dir)) {
+            $targets += $phaseId
+            continue
+        }
+
+        $researchFiles = @(Get-ChildItem -Path $dir -File -Filter "*RESEARCH.md" -ErrorAction SilentlyContinue)
+        if ($researchFiles.Count -eq 0) {
+            $targets += $phaseId
+        }
+    }
+
+    return @($targets | Sort-Object -Unique)
+}
+
+function Get-PhasesNeedingPlan {
+    param([int[]]$PhaseIds)
+
+    $targets = @()
+    foreach ($phaseId in @($PhaseIds | Sort-Object -Unique)) {
+        $dir = Get-PhaseDirectoryPath -PhaseId $phaseId
+        if ([string]::IsNullOrWhiteSpace($dir) -or -not (Test-Path $dir)) {
+            $targets += $phaseId
+            continue
+        }
+
+        $planFiles = @(Get-ChildItem -Path $dir -File -Filter "*-PLAN.md" -ErrorAction SilentlyContinue)
+        if ($planFiles.Count -eq 0) {
+            $targets += $phaseId
+        }
+    }
+
+    return @($targets | Sort-Object -Unique)
+}
+
+function Set-RoadmapPhaseCompletionState {
+    param(
+        [string]$RoadmapFile,
+        [int[]]$PhaseIds,
+        [switch]$Complete
+    )
+
+    if (-not (Test-Path $RoadmapFile)) { return $false }
+
+    $phaseSet = New-Object System.Collections.Generic.HashSet[int]
+    foreach ($phaseId in @($PhaseIds | Sort-Object -Unique)) {
+        [void]$phaseSet.Add([int]$phaseId)
+    }
+    if ($phaseSet.Count -eq 0) { return $false }
+
+    $updated = $false
+    $targetToken = if ($Complete) { "x" } else { " " }
+    $lines = @(Get-Content -Path $RoadmapFile)
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = [string]$lines[$i]
+        $match = [regex]::Match($line, '^- \[[ xX]\] \*\*Phase (\d+):', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if (-not $match.Success) { continue }
+
+        $phaseId = 0
+        if (-not [int]::TryParse([string]$match.Groups[1].Value, [ref]$phaseId)) { continue }
+        if (-not $phaseSet.Contains($phaseId)) { continue }
+
+        $newLine = [regex]::Replace($line, '^- \[[ xX]\]', ("- [{0}]" -f $targetToken), 1)
+        if ($newLine -ne $line) {
+            $lines[$i] = $newLine
+            $updated = $true
+        }
+    }
+
+    if ($updated) {
+        Set-Content -Path $RoadmapFile -Value $lines -Encoding UTF8
+    }
+
+    return $updated
+}
+
 function Get-PhaseDirectoryPath {
     param([int]$PhaseId)
 
@@ -1693,6 +1775,28 @@ function Invoke-GlobalSkillMonitored {
     return $exitCode
 }
 
+function New-GsdSkillPrompt {
+    param(
+        [string]$CommandLine,
+        [string]$Purpose
+    )
+
+    $cmdText = if ([string]::IsNullOrWhiteSpace($CommandLine)) { "#" } else { $CommandLine.Trim() }
+    $purposeText = if ([string]::IsNullOrWhiteSpace($Purpose)) { "execute requested stage" } else { $Purpose.Trim() }
+
+    return @"
+$cmdText
+
+Execution contract:
+- Treat `$gsd-*` entries as Codex skill invocations, not shell commands.
+- Use only global skills from `C:\Users\rjain\.codex\skills`.
+- Assume YES for all prompts/approvals.
+- Do not run repetitive environment diagnostics (no looping tool/version probes).
+- Execute only the requested stage for this invocation: $purposeText.
+- Keep output concise and include completed phase/plan ids and changed files.
+"@
+}
+
 $script:ResolvedProjectRoot = (Resolve-Path -Path $ProjectRoot).Path
 $script:ResolvedRoadmapPath = Resolve-PathFromRoot -Root $script:ResolvedProjectRoot -PathValue $RoadmapPath
 $script:ResolvedStatePath = Resolve-PathFromRoot -Root $script:ResolvedProjectRoot -PathValue $StatePath
@@ -1809,82 +1913,14 @@ $lastConfirmLog = ""
 $stopReason = "max_outer_loops_reached"
 $finalMetric = $null
 
-$autoDevCommand = '$gsd-auto-dev --write --max-cycles ' + $AutoDevMaxCycles + ' --project-root "' + $script:ResolvedProjectRoot + '" --roadmap-path "' + $RoadmapPath + '" --state-path "' + $StatePath + '" --strict-root'
-
-$autoDevPromptTemplate = @'
-{0}
-
-Execution contract:
-- Treat `$gsd-*` entries as Codex skill invocations, not shell commands.
-- Use only global skills from `C:\Users\rjain\.codex\skills` for all `/gsd` commands.
-- Assume YES for all prompts/approvals.
-- In each cycle, process pending phases by stage:
-  1) parallel multi-agent research for all pending phases needing research,
-  2) parallel multi-agent planning for all pending phases needing plans,
-  3) sequential execution of phases in deterministic roadmap order.
-- Review artifact root for this run: `{4}`.
-- During `$gsd-code-review`, run detailed review with parallel multi-agent fan-out for layers/gates, then aggregate deterministically.
-- During `$gsd-code-review`, you MUST run a fresh deep code review against current code (frontend/backend/database/auth/agent) with security + dead-code + contract analysis against latest Figma + spec/docs.
-- Forbidden: manually patching `{4}/EXECUTIVE-SUMMARY.md` to reset or force `Health`, `Code Review Totals`, or `Deep Review Totals`.
-- Forbidden: any `Deep Review Totals: STATUS=INGESTED` sourced from `{4}/EXECUTIVE-SUMMARY.md`.
-- Require fresh `{4}/layers/code-review-summary.json` from this run with `lineTraceability.status=PASSED`.
-- Require `deepReview.status` to be parseable and not `UNPARSABLE`/`INGESTED`, with non-negative deep-review health and parseable TOTAL_FINDINGS in the same artifact.
-- If review is non-clean (health<100, drift>0, unmapped>0, deep-review invalid/unparsable, or findings>0) and pending phase count is 0, you MUST synthesize new remediation phases + plans immediately before ending the cycle.
-- Use the native shell available on this host (Windows cmd/PowerShell). Do not require Bash.
-- For scripted operations, prefer explicit PowerShell path:
-  - `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -Command "<...>"`
-- Avoid complex nested quoting in `cmd.exe /c` one-liners; split work into simpler commands.
-- Preflight budget is strict: enter the first workflow stage within 90 seconds and no more than 15 shell probes.
-- Do not loop environment/tool checks (for example repeated `find/findstr/rg/where` diagnostics). If a probe fails, use a direct PowerShell fallback and continue.
-- After initial root validation, immediately dispatch stage work (research/planning/execute) from roadmap + phase artifacts.
-- Strict root must remain enforced with:
-  - project root `{1}`
-  - roadmap path `{2}`
-  - state path `{3}`
-- If root/roadmap is ambiguous, fail fast and print conflicting paths.
-- If commit/push fails, auto-fix git issues and retry until push succeeds before continuing.
-- Mandatory progress update every heartbeat interval (configured by `HeartbeatSeconds`) including:
-  - what script is currently doing
-  - current substage (`research`, `planning`, `execute`, `code-review`, or `phase-synthesis`)
-  - when research starts/completes, include exact phase ids researched
-  - when planning starts/completes, include exact phase ids planned
-  - during execute heartbeats, include explicit code generation signal (`code_generated=yes/no`) and finding ids currently being remediated
-  - when code-review starts/completes, include summary (health/drift/unmapped/finding totals) and resolved-vs-new finding ids
-  - when phases are created/assigned from findings, include phase->finding mapping lines for every affected phase
-  - current phase counts (completed, in progress, pending)
-  - target metrics (health=100, drift=0, unmapped=0)
-  - current metrics (health, drift, unmapped)
-  - git commits completed so far in this run
-'@
-$autoDevPrompt = [string]::Format($autoDevPromptTemplate, $autoDevCommand, $script:ResolvedProjectRoot, $RoadmapPath, $StatePath, $script:ReviewRootRelativeEffective)
-
-$confirmPromptTemplate = @'
-$gsd-code-review
-
-Confirmation contract:
-- No code changes between clean-candidate pass and this confirmation pass.
-- Re-run full deep `$gsd-code-review` on current HEAD (do not reuse or summarize prior artifacts only).
-- Required scope: deep multi-agent security/dead-code/contract analysis across code files versus latest Figma + docs/spec.
-- Review artifact root for this run: `{0}`.
-- Forbidden: manual edits that force `Health`, `Code Review Totals`, or `Deep Review Totals`.
-- Forbidden: `Deep Review Totals: STATUS=INGESTED` from summary artifact source.
-- Regenerate `{0}/layers/code-review-summary.json` and keep `lineTraceability.status=PASSED`.
-- Report health, deterministic drift total, and unmapped findings.
-- Include current commit hash and whether results remain clean.
-'@
-$confirmPrompt = [string]::Format($confirmPromptTemplate, $script:ReviewRootRelativeEffective)
-
 $phaseSynthesisPromptTemplate = @'
 $gsd-code-review
 
 Remediation phase synthesis contract:
 - Run a fresh `$gsd-code-review` for the current code at review root `{0}`.
-- If health is below `100/100`, deterministic drift is non-zero, unmapped findings are non-zero, deep review is invalid/unparsable, or any findings exist, you MUST create new unchecked remediation phases in `{1}` and matching actionable `*-PLAN.md` files under `.planning/phases`.
-- Do not stop with stuck-guard when findings exist and pending phase count is zero.
-- Update `{2}` with newly created phase ids and next action.
-- Return the exact phase numbers created.
+- If health is below `100/100`, deterministic drift is non-zero, unmapped findings are non-zero, deep review is invalid/unparsable, or findings exist, create unchecked remediation phases and matching `*-PLAN.md` artifacts under `.planning/phases`.
+- Return exact phase numbers created and findings mapped to each phase.
 '@
-$phaseSynthesisPrompt = [string]::Format($phaseSynthesisPromptTemplate, $script:ReviewRootRelativeEffective, $RoadmapPath, $StatePath)
 
 for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
     try {
@@ -1895,37 +1931,110 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
         $phaseText = if ($pendingBefore.Count -gt 0) { [string]$pendingBefore[0] } else { "-" }
 
         $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
-        $autoDevLog = Join-Path $script:ResolvedLogDir ("auto-dev-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
-        $lastAutoDevLog = $autoDevLog
+        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "cycle-start" -Doing ("starting cycle {0}" -f $cycle) -Phase $phaseText -IsRunning $false -LogName "-"
 
-        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "cycle-start" -Doing ("starting cycle {0}" -f $cycle) -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
+        if ($pendingBefore.Count -gt 0) {
+            $researchTargets = @(Get-PhasesNeedingResearch -PhaseIds $pendingBefore)
+            if ($researchTargets.Count -gt 0) {
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-enter" -Doing ("entering research phases={0}" -f (Join-IntList -Values $researchTargets -MaxItems 12)) -Phase $phaseText -IsRunning $true -LogName "-"
+                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research" -MapType "research-target" -PhaseIds $researchTargets -LogName "-"
+                foreach ($phaseId in $researchTargets) {
+                    $researchLog = Join-Path $script:ResolvedLogDir ("batch-research-cycle-{0:D3}-phase-{1}-{2}.log" -f $cycle, $phaseId, $stamp)
+                    $lastAutoDevLog = $researchLog
+                    $prompt = New-GsdSkillPrompt -CommandLine ("`$gsd-batch-research {0}" -f $phaseId) -Purpose ("research phase {0}" -f $phaseId)
+                    $researchExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $researchLog -Stage "research" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-research {0}" -f $phaseId)
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("research-phase-exit-{0}" -f $researchExit) -Doing ("research phase={0} complete" -f $phaseId) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $researchLog)
+                }
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-complete" -Doing ("completed research phases={0}" -f (Join-IntList -Values $researchTargets -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
+            } else {
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-skip" -Doing ("research already complete for pending phases={0}" -f (Join-IntList -Values $pendingBefore -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
+            }
 
-        $autoDevExit = Invoke-GlobalSkillMonitored -Prompt $autoDevPrompt -LogFile $autoDevLog -Stage "auto-dev" -Cycle $cycle -Phase $phaseText -Doing ("running {0}" -f $autoDevCommand)
+            $pendingBeforePlan = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+            $planTargets = @(Get-PhasesNeedingPlan -PhaseIds $pendingBeforePlan)
+            if ($planTargets.Count -gt 0) {
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-enter" -Doing ("entering planning phases={0}" -f (Join-IntList -Values $planTargets -MaxItems 12)) -Phase $phaseText -IsRunning $true -LogName "-"
+                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning" -MapType "planning-target" -PhaseIds $planTargets -LogName "-"
+                foreach ($phaseId in $planTargets) {
+                    $planLog = Join-Path $script:ResolvedLogDir ("batch-plan-cycle-{0:D3}-phase-{1}-{2}.log" -f $cycle, $phaseId, $stamp)
+                    $lastAutoDevLog = $planLog
+                    $prompt = New-GsdSkillPrompt -CommandLine ("`$gsd-batch-plan {0}" -f $phaseId) -Purpose ("plan phase {0}" -f $phaseId)
+                    $planExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $planLog -Stage "planning" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-plan {0}" -f $phaseId)
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("planning-phase-exit-{0}" -f $planExit) -Doing ("planning phase={0} complete" -f $phaseId) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $planLog)
+                }
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-complete" -Doing ("completed planning phases={0}" -f (Join-IntList -Values $planTargets -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
+            } else {
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-skip" -Doing ("planning already complete for pending phases={0}" -f (Join-IntList -Values $pendingBeforePlan -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
+            }
 
-        $pushAfterAutoDev = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "auto-dev"
-        if (-not $pushAfterAutoDev.Ok) {
-            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterAutoDev.Status) -Doing "stopping after push failure" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
-            $stopReason = $pushAfterAutoDev.Status
-            break
+            $pendingAfterPlan = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+            $completedPrematurely = @($pendingBeforePlan | Where-Object { $pendingAfterPlan -notcontains $_ } | Sort-Object -Unique)
+            if ($completedPrematurely.Count -gt 0) {
+                $reopened = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds $completedPrematurely
+                if ($reopened) {
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-reopen-no-execute" -Doing ("reopened phases marked complete before execute: {0}" -f (Join-IntList -Values $completedPrematurely -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
+                }
+            }
+
+            $executeTargets = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+            if ($executeTargets.Count -gt 0) {
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-enter" -Doing ("entering execute phases={0}" -f (Join-IntList -Values $executeTargets -MaxItems 12)) -Phase $phaseText -IsRunning $true -LogName "-"
+                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "execute-target" -PhaseIds $executeTargets -LogName "-"
+
+                foreach ($phaseId in $executeTargets) {
+                    $phaseCommitBefore = Get-CommitDeltaSinceStart
+                    $phaseCodeFilesBefore = Get-CodeFileWorkingSetCount
+
+                    $execLog = Join-Path $script:ResolvedLogDir ("batch-execute-cycle-{0:D3}-phase-{1}-{2}.log" -f $cycle, $phaseId, $stamp)
+                    $lastAutoDevLog = $execLog
+                    $prompt = New-GsdSkillPrompt -CommandLine ("`$gsd-batch-execute {0}" -f $phaseId) -Purpose ("execute phase {0}" -f $phaseId)
+                    $execExit = Invoke-GlobalSkillMonitored -Prompt $prompt -LogFile $execLog -Stage "execute" -Cycle $cycle -Phase ([string]$phaseId) -Doing ("running `$gsd-batch-execute {0}" -f $phaseId)
+
+                    $signal = Get-ExecuteCodeSignal -PreviousCommitCount $phaseCommitBefore -PreviousCodeFileCount $phaseCodeFilesBefore
+                    $pendingNow = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                    $phaseCompleted = ($pendingNow -notcontains $phaseId)
+
+                    if ($phaseCompleted -and -not $signal.CodeGenerated) {
+                        $reopened = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds @($phaseId)
+                        if ($reopened) {
+                            $phaseCompleted = $false
+                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reopen-no-code" -Doing ("phase {0} reopened because execute produced no code evidence (new_commits={1}, code_files={2})" -f $phaseId, $signal.NewCommits, $signal.CodeFilesNow) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                        }
+                    }
+
+                    $findingRefs = Join-StringList -Values @(Get-PhaseFindingReferences -PhaseId $phaseId) -MaxItems 8
+                    if ($phaseCompleted) {
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute complete; marking phase complete code_generated={1} new_commits={2} code_files={3} findings={4}" -f $phaseId, $(if ($signal.CodeGenerated) { "yes" } else { "no" }), $signal.NewCommits, $signal.CodeFilesNow, $findingRefs) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                        Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds @($phaseId) -LogName (Split-Path -Leaf $execLog) -Force
+                    } else {
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute incomplete; remains pending code_generated={1} new_commits={2} code_files={3} findings={4}" -f $phaseId, $(if ($signal.CodeGenerated) { "yes" } else { "no" }), $signal.NewCommits, $signal.CodeFilesNow, $findingRefs) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                    }
+                }
+
+                $pendingAfterExecute = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-complete" -Doing ("execute stage complete remaining_pending={0}" -f (Join-IntList -Values $pendingAfterExecute -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
+            }
+        } else {
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "no-pending-phases" -Doing "no pending phases before stage execution" -Phase "-" -IsRunning $false -LogName "-"
         }
 
-        $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
         $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
         $allPhasesAfter = @(Get-AllPhases -RoadmapFile $script:ResolvedRoadmapPath)
-        $deepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $cycleStartUtc
+        $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+        Write-PhaseWaveProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-stage-wave" -Phase $phaseText -LogName "-" -BeforePending $pendingBefore -AfterPending $pendingAfter -BeforeAll $allPhasesBefore -AfterAll $allPhasesAfter -BeforeMetric $metricBefore -AfterMetric $metric
 
-        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Doing "evaluating clean-candidate gates" -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
-        Write-PhaseWaveProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Phase $phaseText -LogName (Split-Path -Leaf $autoDevLog) -BeforePending $pendingBefore -AfterPending $pendingAfter -BeforeAll $allPhasesBefore -AfterAll $allPhasesAfter -BeforeMetric $metricBefore -AfterMetric $metric
-        Write-CodeReviewProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -Phase $phaseText -LogName (Split-Path -Leaf $autoDevLog) -NotBeforeUtc $cycleStartUtc
-        if ($pendingAfter.Count -gt 0) {
-            Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-auto-dev-exit-{0}" -f $autoDevExit) -MapType "pending" -PhaseIds $pendingAfter -LogName (Split-Path -Leaf $autoDevLog)
-        }
-        if (-not $deepReviewEvidence.Ok) {
-            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-auto-dev-deep-review-invalid" -Doing ("deep-review evidence invalid: {0}" -f $deepReviewEvidence.Reason) -Phase $phaseText -IsRunning $false -LogName (Split-Path -Leaf $autoDevLog)
-        }
+        if ($pendingAfter.Count -eq 0) {
+            $reviewLog = Join-Path $script:ResolvedLogDir ("code-review-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
+            $lastConfirmLog = $reviewLog
+            $reviewPrompt = New-GsdSkillPrompt -CommandLine '$gsd-code-review' -Purpose "run code review after all phases are complete"
+            $reviewExit = Invoke-GlobalSkillMonitored -Prompt $reviewPrompt -LogFile $reviewLog -Stage "code-review" -Cycle $cycle -Phase "-" -Doing "running `$gsd-code-review"
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("code-review-exit-{0}" -f $reviewExit) -Doing "code-review complete" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $reviewLog)
+            Write-CodeReviewProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-code-review-exit-{0}" -f $reviewExit) -Phase "-" -LogName (Split-Path -Leaf $reviewLog) -NotBeforeUtc $cycleStartUtc -Force
 
-        $needsPhaseSynthesis = (
-            $pendingAfter.Count -eq 0 -and (
+            $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+            $deepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $cycleStartUtc
+
+            $needsPhaseSynthesis = (
                 -not $metric -or
                 -not $metric.Complete -or
                 $metric.Health -ne 100 -or
@@ -1933,39 +2042,36 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                 $metric.Unmapped -ne 0 -or
                 -not $deepReviewEvidence.Ok
             )
-        )
 
-        if ($needsPhaseSynthesis) {
-            $synthPendingBefore = @($pendingAfter)
-            $synthAllBefore = @($allPhasesAfter)
-            $synthMetricBefore = $metric
-            $synthLog = Join-Path $script:ResolvedLogDir ("phase-synthesis-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
-            $phaseSynthesisExit = Invoke-GlobalSkillMonitored -Prompt $phaseSynthesisPrompt -LogFile $synthLog -Stage "phase-synthesis" -Cycle $cycle -Phase "-" -Doing "forcing remediation phase synthesis from latest review findings"
+            if ($needsPhaseSynthesis) {
+                $synthLog = Join-Path $script:ResolvedLogDir ("phase-synthesis-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
+                $phaseSynthesisPrompt = [string]::Format($phaseSynthesisPromptTemplate, $script:ReviewRootRelativeEffective, $RoadmapPath, $StatePath)
+                $synthExit = Invoke-GlobalSkillMonitored -Prompt $phaseSynthesisPrompt -LogFile $synthLog -Stage "phase-synthesis" -Cycle $cycle -Phase "-" -Doing "assigning findings to new remediation phases"
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("phase-synthesis-exit-{0}" -f $synthExit) -Doing "phase synthesis complete" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
 
-            $pushAfterSynthesis = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-synthesis"
-            if (-not $pushAfterSynthesis.Ok) {
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterSynthesis.Status) -Doing "stopping after phase-synthesis push failure" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
-                $stopReason = $pushAfterSynthesis.Status
-                break
+                $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                $allPhasesAfter = @(Get-AllPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+                Write-PhaseWaveProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $synthExit) -Phase "-" -LogName (Split-Path -Leaf $synthLog) -BeforePending $pendingBefore -AfterPending $pendingAfter -BeforeAll $allPhasesBefore -AfterAll $allPhasesAfter -BeforeMetric $metricBefore -AfterMetric $metric
+                if ($pendingAfter.Count -gt 0) {
+                    Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $synthExit) -MapType "assigned" -PhaseIds $pendingAfter -LogName (Split-Path -Leaf $synthLog) -Force
+                }
             }
-
-            $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
-            $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
-            $allPhasesAfter = @(Get-AllPhases -RoadmapFile $script:ResolvedRoadmapPath)
-            $deepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $cycleStartUtc
-
-            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Doing "re-evaluated metrics after forced phase synthesis" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
-            Write-PhaseWaveProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Phase "-" -LogName (Split-Path -Leaf $synthLog) -BeforePending $synthPendingBefore -AfterPending $pendingAfter -BeforeAll $synthAllBefore -AfterAll $allPhasesAfter -BeforeMetric $synthMetricBefore -AfterMetric $metric
-            Write-CodeReviewProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -Phase "-" -LogName (Split-Path -Leaf $synthLog) -NotBeforeUtc $cycleStartUtc
-            if ($pendingAfter.Count -gt 0) {
-                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-phase-synthesis-exit-{0}" -f $phaseSynthesisExit) -MapType "pending" -PhaseIds $pendingAfter -LogName (Split-Path -Leaf $synthLog)
-            }
-            if (-not $deepReviewEvidence.Ok) {
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-phase-synthesis-deep-review-invalid" -Doing ("deep-review evidence still invalid: {0}" -f $deepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $synthLog)
-            }
+        } else {
+            Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-execute-pending" -MapType "pending" -PhaseIds $pendingAfter -LogName "-" -Force
         }
 
-        $isCleanCandidate = (
+        $pushAfterCycle = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "cycle"
+        if (-not $pushAfterCycle.Ok) {
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterCycle.Status) -Doing "stopping after push failure" -Phase "-" -IsRunning $false -LogName "-"
+            $stopReason = $pushAfterCycle.Status
+            break
+        }
+
+        $metric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
+        $pendingAfter = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+        $deepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $cycleStartUtc
+        $cleanNow = (
             $metric -and $metric.Complete -and
             $metric.Health -eq 100 -and
             $metric.Drift -eq 0 -and
@@ -1974,50 +2080,8 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
             $deepReviewEvidence.Ok
         )
 
-        if (-not $isCleanCandidate) { continue }
-
-        $codeBefore = Get-CodeFingerprint
-
-        $confirmLog = Join-Path $script:ResolvedLogDir ("final-confirm-cycle-{0:D3}-{1}.log" -f $cycle, $stamp)
-        $lastConfirmLog = $confirmLog
-        $confirmStartUtc = (Get-Date).ToUniversalTime()
-
-        $confirmExit = Invoke-GlobalSkillMonitored -Prompt $confirmPrompt -LogFile $confirmLog -Stage "final-confirm" -Cycle $cycle -Phase "-" -Doing "running final clean confirmation review"
-
-        $pushAfterConfirm = Ensure-GitPushSynced -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "final-confirm"
-        if (-not $pushAfterConfirm.Ok) {
-            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("stop-{0}" -f $pushAfterConfirm.Status) -Doing "stopping after confirmation push failure" -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
-            $stopReason = $pushAfterConfirm.Status
-            break
-        }
-
-        $confirmMetric = Get-BestMetricSnapshot -Paths $script:ResolvedSummaryPaths
-        $pendingConfirm = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
-        $confirmDeepReviewEvidence = Get-DeepReviewEvidence -NotBeforeUtc $confirmStartUtc
-        $codeAfter = Get-CodeFingerprint
-        $noCodeChanges = Test-CodeFingerprintEqual -Left $codeBefore -Right $codeAfter
-
-        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -Doing ("final confirmation analyzed; no_code_changes={0}" -f $noCodeChanges) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
-        Write-CodeReviewProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -Phase "-" -LogName (Split-Path -Leaf $confirmLog) -NotBeforeUtc $confirmStartUtc -Force
-        if ($pendingConfirm.Count -gt 0) {
-            Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("post-final-confirm-exit-{0}" -f $confirmExit) -MapType "pending" -PhaseIds $pendingConfirm -LogName (Split-Path -Leaf $confirmLog)
-        }
-        if (-not $confirmDeepReviewEvidence.Ok) {
-            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "post-final-confirm-deep-review-invalid" -Doing ("confirmation deep-review evidence invalid: {0}" -f $confirmDeepReviewEvidence.Reason) -Phase "-" -IsRunning $false -LogName (Split-Path -Leaf $confirmLog)
-        }
-
-        $confirmClean = (
-            $confirmMetric -and $confirmMetric.Complete -and
-            $confirmMetric.Health -eq 100 -and
-            $confirmMetric.Drift -eq 0 -and
-            $confirmMetric.Unmapped -eq 0 -and
-            $pendingConfirm.Count -eq 0 -and
-            $noCodeChanges -and
-            $confirmDeepReviewEvidence.Ok
-        )
-
-        if ($confirmClean) {
-            $finalMetric = $confirmMetric
+        if ($cleanNow) {
+            $finalMetric = $metric
             $stopReason = "clean-confirmed"
             break
         }

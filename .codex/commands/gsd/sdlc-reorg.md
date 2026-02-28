@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:sdlc-reorg
 description: Run repository reorganization to SDLC v6.0 folder structure
 argument-hint: "[--dry-run | --classify-only | --agent=name]"
@@ -27,8 +27,8 @@ Orchestrator role: Parse flags, confirm with user (destructive operation), verif
 <context>
 Flags: $ARGUMENTS
 - (no flags): Full reorganization with user confirmation
-- --dry-run: Classify and plan only â€” no files moved (safe/read-only)
-- --classify-only: Run classifier agent only â€” output classification report
+- --dry-run: Classify and plan only — no files moved (safe/read-only)
+- --classify-only: Run classifier agent only — output classification report
 - --agent=name: Run specific agent only (code, test, docs, database, design, scripts)
 </context>
 
@@ -95,4 +95,3 @@ If build failed:
 > Check validation report at: {path}
 
 </process>
-

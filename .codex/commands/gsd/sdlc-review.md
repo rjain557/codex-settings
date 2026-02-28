@@ -1,64 +1,100 @@
 ﻿---
 name: gsd:sdlc-review
-description: Run SDLC review, generate parseable health/finding reports, and create remediation phases when needed
+description: Run comprehensive multi-agent code review pipeline (Phase G Code Debugger) and auto-create remediation phases when findings exist
 argument-hint: "[--layer=frontend|backend|database|auth]"
 allowed-tools:
   - Read
   - Write
-  - Edit
-  - Glob
-  - Grep
   - Bash
+  - Grep
+  - Glob
+  - Task
 ---
+
 <objective>
-Run SDLC code review and refresh `docs/review/*` reports used by remediation loops.
-When review health is below 100 or findings exist, create actionable remediation phases so auto-dev can continue toward 100/100.
+Run the Phase G comprehensive code review pipeline. Spawns parallel review agents for each code layer, builds traceability matrix, and generates developer handoff with prioritized findings.
+When health is below 100 or findings exist, create remediation phases in planning artifacts so execution can continue automatically toward 100/100.
+
+Orchestrator role: Parse options, spawn sdlc-code-reviewer agent, enforce design/spec/remote-agent parity checks, enforce remediation phase creation, present findings summary.
 </objective>
+
+<execution_context>
+@docs/sdlc/phase.g.codedebugger/code-debugger.md
+@.planning/STATE.md
+</execution_context>
+
 <context>
 Options: $ARGUMENTS
-@.planning/STATE.md
-@.planning/ROADMAP.md
+- (no flags): Full review - all layers + traceability matrix + SDLC gap analysis
+- --layer=frontend: Frontend layer only
+- --layer=backend: Backend layer only
+- --layer=database: Database layer only
+- --layer=auth: Auth/SSO layer only
 </context>
+
 <process>
-1) Determine scope from options (default full review).
-2) Inspect code and run relevant build/typecheck checks for scope.
-3) Run mandatory cross-artifact coverage checks on every full-scope pass (and whenever evidence exists in layer mode):
-   - **Design parity check**:
-     - Detect design sources (for example `design/figma/*`, `docs/phases/phase-c/*`, storyboard outputs).
-     - Compare design routes/screens/components against implemented frontend routes/screens/components.
-     - Report explicit counts: total, implemented, partial, missing.
-   - **Specification parity check**:
-     - Validate `docs/spec/*` (UI contract, OpenAPI, API-to-SP map, DB plan, test plan) against current code.
-     - Verify route/controller alignment, endpoint-to-service/repository/SP mapping, and schema/SP existence.
-     - Do not assume docs are complete because they exist; verify implementation evidence.
-   - **Remote-agent parity check**:
-     - If repo docs/spec mention remote agent / workstation connector / moltbot-like behavior, verify code presence (for example `src/Agent`, `src/Services/RemoteAgent`, related APIs and DB objects).
-     - If missing, raise explicit findings and recommended remediation phase(s).
-4) Refresh traceability artifacts with evidence-backed status and counts.
-5) Produce/update:
-   - docs/review/EXECUTIVE-SUMMARY.md
-   - docs/review/FULL-REPORT.md
-   - docs/review/DEVELOPER-HANDOFF.md
-   - docs/review/PRIORITIZED-TASKS.md
-   - docs/review/TRACEABILITY-MATRIX.md
-6) Ensure executive summary contains a parseable health score in `X/100` form and severity totals.
-7) Ensure FULL-REPORT contains a section named `Coverage Checks` with:
-   - Design parity result (counts + top missing items)
-   - Spec parity result (counts + top mismatches)
-   - Remote-agent result (implemented vs missing evidence)
-8) Determine whether remediation phases are required:
-   - Required if health score < 100, or any Blocker/High/Medium/Low findings exist.
-   - Not required only when health is exactly 100 and findings total is 0.
-9) When remediation is required, create/update planning artifacts in the same pass:
-   - Read `.planning/ROADMAP.md` and find current unchecked phases.
-   - If no pending phase already maps to the current findings, append new unchecked phase entry/entries using next numeric phase id(s).
-   - Create corresponding phase folder(s) under `.planning/phases/NN-*` with at least one actionable `*-PLAN.md` per phase that maps directly to `docs/review/PRIORITIZED-TASKS.md` task IDs.
-   - Grouping rule:
-     - Blocker/High findings must be assigned to at least one near-term remediation phase.
-     - Medium/Low findings can be grouped into follow-on phase(s) but must still be explicitly represented.
-   - Update `.planning/STATE.md` current focus and last activity to reference the new phase ids.
-10) Add explicit evidence to `docs/review/EXECUTIVE-SUMMARY.md`:
-   - `Remediation Phases Created:` followed by phase numbers and task IDs covered.
-   - If phases were not created despite required remediation, mark review as failed and explain why.
-11) Return top risks, remediation focus, and the exact phase numbers created/updated.
+
+## 1. Parse Options
+
+Determine review scope from $ARGUMENTS:
+- Default: full review (all layers + cross-layer analysis)
+- --layer=X: single layer review only
+
+## 2. Spawn sdlc-code-reviewer Agent
+
+Spawn via Task tool:
+- description: "SDLC Code Review ({scope})"
+- prompt: Include scope, reference to SDLC code debugger docs, and mandatory coverage checks:
+  - Design parity (Figma/storyboards/routes/components -> implemented frontend)
+  - Specification parity (`docs/spec/*` -> routes/controllers/services/repositories/SP/schema)
+  - Remote-agent parity when docs mention remote agent/workstation connector/moltbot-like behavior
+
+The agent will:
+1. Inventory the repository (Phase 0)
+2. Spawn layer reviewers - 4 in parallel for full, or 1 for single-layer (Wave 1)
+3. Spawn cross-layer agents - traceability + SDLC gaps (Wave 2, full only)
+4. Spawn MCP reviewer if detected (Wave 3, conditional)
+5. Run build verification (MANDATORY)
+6. Consolidate findings into reports with coverage counts (implemented/partial/missing)
+
+Output locations:
+- docs/review/EXECUTIVE-SUMMARY.md
+- docs/review/FULL-REPORT.md
+- docs/review/DEVELOPER-HANDOFF.md
+- docs/review/PRIORITIZED-TASKS.md
+- docs/review/TRACEABILITY-MATRIX.md
+
+## 3. Mandatory Remediation Phase Creation
+
+After findings are consolidated, enforce this rule:
+- If health < 100 or total findings > 0, remediation phases are required.
+- Only skip phase creation when health == 100 and findings total == 0.
+
+When required:
+1. Read `.planning/ROADMAP.md` and identify existing unchecked phases.
+2. If existing pending phases do not already cover current prioritized task IDs, append new unchecked phase entry/entries using next phase number(s).
+3. Create matching phase folders under `.planning/phases/NN-*` with at least one actionable `*-PLAN.md` per phase.
+4. Ensure Blocker/High findings are represented in near-term phase(s); Medium/Low can be batched into follow-on phase(s).
+5. Update `.planning/STATE.md` current focus and last activity with the new phase ids.
+6. Add `Remediation Phases Created:` section to `docs/review/EXECUTIVE-SUMMARY.md` including phase numbers and task IDs covered.
+7. If phase creation fails while required, mark the review run as failed and explain the blocking cause.
+
+## 4. Present Results
+
+Display executive summary:
+> **Code Review Complete** - Overall Health: {score}
+>
+> Findings: {blocker} Blocker | {high} High | {medium} Medium | {low} Low
+>
+> Remediation phases: {phase list or "none required"}
+>
+> **Top 5 Risks:**
+> 1. {risk description}
+> ...
+
+Offer next steps:
+- "View full report at docs/review/FULL-REPORT.md"
+- "View developer handoff at docs/review/DEVELOPER-HANDOFF.md"
+- "Run `/gsd:sdlc-validate` to check contract consistency"
+
 </process>

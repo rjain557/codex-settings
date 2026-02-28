@@ -1,4 +1,4 @@
-﻿---
+---
 name: gsd:gen-db-migration
 description: Generate idempotent database migration scripts with rollback (SQL Server/PostgreSQL)
 argument-hint: "[--type <diff|specific|baseline|seed>] [--name <migration-name>] [--db <sqlserver|postgres|both>]"
@@ -26,7 +26,7 @@ Supports SQL Server (primary) and PostgreSQL (secondary).
 </objective>
 
 <execution_context>
-@C:/Users/rjain/.codex/get-shit-done/workflows/gen-db-migration.md
+@C:/Users/rjain/.claude/get-shit-done/workflows/gen-db-migration.md
 </execution_context>
 
 <context>
@@ -38,7 +38,6 @@ Target: $ARGUMENTS (optional flags)
 </context>
 
 <process>
-Execute the gen-db-migration workflow from @C:/Users/rjain/.codex/get-shit-done/workflows/gen-db-migration.md end-to-end.
+Execute the gen-db-migration workflow from @C:/Users/rjain/.claude/get-shit-done/workflows/gen-db-migration.md end-to-end.
 Scan existing db/sql/ files for current schema state. Ask migration scope and target database. Generate idempotent scripts with IF EXISTS guards and matching rollback scripts.
 </process>
-
