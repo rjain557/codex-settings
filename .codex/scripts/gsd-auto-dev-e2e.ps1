@@ -15,6 +15,7 @@ param(
     [string]$LogDir = ".planning/agent-output",
     [string]$StatusFile = ".planning/agent-output/gsd-e2e-status.log",
     [int]$HeartbeatSeconds = 60,
+    [switch]$ProgressToConsole = $false,
     [switch]$OpenWindow,
     [switch]$DryRun
 )
@@ -140,6 +141,7 @@ if ($OpenWindow) {
     $statusEsc = $StatusFile.Replace("'", "''")
     $reviewRootEsc = $ReviewRootRelative.Replace("'", "''")
     $strictLiteral = if ($StrictRoot) { '$true' } else { '$false' }
+    $progressToConsoleLiteral = if ($ProgressToConsole) { '$true' } else { '$false' }
     $summaryLine = ""
     if ($PSBoundParameters.ContainsKey("SummaryPaths")) {
         $summaryItems = @()
@@ -163,6 +165,7 @@ if ($OpenWindow) {
     StatusFile = '$statusEsc'
     HeartbeatSeconds = $HeartbeatSeconds
     StrictRoot = $strictLiteral
+    ProgressToConsole = $progressToConsoleLiteral
 $summaryLine
 }
 $dryLine
@@ -1474,7 +1477,9 @@ function Write-ProgressUpdate {
         $ts, $Cycle, $stageText, $doingText, $phaseText, $phaseCounts.Completed, $phaseCounts.InProgress, $phaseCounts.Pending, $healthText, $driftText, $unmappedText, $commitsDone, $elapsedText, $logText
 
     Add-Content -Path $StatusPath -Value $line
-    Write-Host $line -ForegroundColor Green
+    if ($ProgressToConsole) {
+        Write-Host $line -ForegroundColor Green
+    }
 }
 
 function Invoke-GlobalSkillMonitored {
