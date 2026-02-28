@@ -375,7 +375,7 @@ function Get-DeepReviewEvidence {
             Ok     = $true
             Reason = "ok"
             Best   = $best
-            All    = @($rows)
+            All    = $rows.ToArray()
         }
     }
 
@@ -395,9 +395,9 @@ function Get-DeepReviewEvidence {
 
     return [PSCustomObject]@{
         Ok     = $false
-        Reason = ($reasons -join ",")
+        Reason = ([string]::Join(",", $reasons.ToArray()))
         Best   = $best
-        All    = @($rows)
+        All    = $rows.ToArray()
     }
 }
 
