@@ -1212,6 +1212,41 @@ function Get-PhasesNeedingPlan {
     return @($targets | Sort-Object -Unique)
 }
 
+function Test-PhaseStageSatisfied {
+    param(
+        [string]$Stage,
+        [int]$PhaseId,
+        [int]$MaxChecks = 3,
+        [int]$RetryDelaySeconds = 1
+    )
+
+    $stageSafe = if ([string]::IsNullOrWhiteSpace([string]$Stage)) { "" } else { $Stage.Trim().ToLowerInvariant() }
+    if ($stageSafe -ne "research" -and $stageSafe -ne "planning") {
+        return $false
+    }
+
+    $checks = [Math]::Max(1, [int]$MaxChecks)
+    $delay = [Math]::Max(0, [int]$RetryDelaySeconds)
+
+    for ($attempt = 1; $attempt -le $checks; $attempt++) {
+        $remaining = if ($stageSafe -eq "research") {
+            @(Get-PhasesNeedingResearch -PhaseIds @($PhaseId))
+        } else {
+            @(Get-PhasesNeedingPlan -PhaseIds @($PhaseId))
+        }
+
+        if ($remaining.Count -eq 0) {
+            return $true
+        }
+
+        if ($attempt -lt $checks -and $delay -gt 0) {
+            Start-Sleep -Seconds $delay
+        }
+    }
+
+    return $false
+}
+
 function Set-RoadmapPhaseCompletionState {
     param(
         [string]$RoadmapFile,
@@ -2604,6 +2639,7 @@ function Invoke-GlobalSkillParallelPhaseBatch {
     }
 
     $stageSafe = if ([string]::IsNullOrWhiteSpace($Stage)) { "stage" } else { ($Stage -replace '[^a-zA-Z0-9_-]', '_').ToLowerInvariant() }
+    $stageRequiresArtifactCompletionCheck = @("research", "planning") -contains $stageSafe
     $batchStamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
     $workers = New-Object System.Collections.Generic.List[object]
     $exitMap = @{}
@@ -2670,7 +2706,15 @@ function Invoke-GlobalSkillParallelPhaseBatch {
 
             if ($worker.Process.HasExited) {
                 try { $null = $worker.Process.WaitForExit() } catch { }
-                $exitCode = if ($null -eq $worker.Process.ExitCode) { -1 } else { [int]$worker.Process.ExitCode }
+                $rawExitCode = if ($null -eq $worker.Process.ExitCode) { -1 } else { [int]$worker.Process.ExitCode }
+                $exitCode = $rawExitCode
+                $exitReclassified = $false
+                if ($rawExitCode -eq -1 -and $stageRequiresArtifactCompletionCheck) {
+                    if (Test-PhaseStageSatisfied -Stage $stageSafe -PhaseId ([int]$worker.PhaseId)) {
+                        $exitCode = 0
+                        $exitReclassified = $true
+                    }
+                }
                 $worker.Completed = $true
                 $worker.ExitCode = $exitCode
                 $exitMap[[string]$worker.PhaseId] = $exitCode
@@ -2679,7 +2723,12 @@ function Invoke-GlobalSkillParallelPhaseBatch {
                     try { Get-Content -Path $worker.ErrFile | Add-Content -Path $worker.LogFile } catch { }
                 }
 
-                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-phase-exit-{1}" -f $Stage, $exitCode) -Doing ("{0} phase={1} complete pass={2}" -f $stageSafe, $worker.PhaseId, $Pass) -Phase ([string]$worker.PhaseId) -IsRunning $false -LogName (Split-Path -Leaf $worker.LogFile)
+                $phaseExitDoing = if ($exitReclassified) {
+                    ("{0} phase={1} complete pass={2} raw_exit={3} reclassified=artifact-complete" -f $stageSafe, $worker.PhaseId, $Pass, $rawExitCode)
+                } else {
+                    ("{0} phase={1} complete pass={2}" -f $stageSafe, $worker.PhaseId, $Pass)
+                }
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-phase-exit-{1}" -f $Stage, $exitCode) -Doing $phaseExitDoing -Phase ([string]$worker.PhaseId) -IsRunning $false -LogName (Split-Path -Leaf $worker.LogFile)
             } else {
                 $runningPhases.Add([int]$worker.PhaseId) | Out-Null
             }
