@@ -19,10 +19,15 @@ param(
     [int]$LongProcessStallSeconds = 600,
     [int]$ExecuteStallSplitThreshold = 2,
     [int]$ExecuteStallSplitParts = 3,
+    [int]$ExecuteMaxSplitDepth = 1,
+    [int]$ExecuteSplitRootPhaseLimit = 12,
+    [int]$ExecutePendingSplitPhaseLimit = 24,
+    [int]$ExecuteUnsplittableRetryLimit = 4,
     [int]$ResearchEtaBaseSeconds = 180,
     [int]$ResearchEtaPerFindingSeconds = 240,
     [int]$PlanningEtaBaseSeconds = 240,
     [int]$PlanningEtaPerFindingSeconds = 300,
+    [bool]$AutoCloseNonActionableSplitPhases = $true,
     [int]$PreflightMaxSeconds = 180,
     [bool]$AutoRecoverOnStop = $true,
     [int]$AutoRecoverMaxRestarts = 40,
@@ -274,10 +279,15 @@ if ($OpenWindow) {
     LongProcessStallSeconds = $LongProcessStallSeconds
     ExecuteStallSplitThreshold = $ExecuteStallSplitThreshold
     ExecuteStallSplitParts = $ExecuteStallSplitParts
+    ExecuteMaxSplitDepth = $ExecuteMaxSplitDepth
+    ExecuteSplitRootPhaseLimit = $ExecuteSplitRootPhaseLimit
+    ExecutePendingSplitPhaseLimit = $ExecutePendingSplitPhaseLimit
+    ExecuteUnsplittableRetryLimit = $ExecuteUnsplittableRetryLimit
     ResearchEtaBaseSeconds = $ResearchEtaBaseSeconds
     ResearchEtaPerFindingSeconds = $ResearchEtaPerFindingSeconds
     PlanningEtaBaseSeconds = $PlanningEtaBaseSeconds
     PlanningEtaPerFindingSeconds = $PlanningEtaPerFindingSeconds
+    AutoCloseNonActionableSplitPhases = $(if ($AutoCloseNonActionableSplitPhases) { '$true' } else { '$false' })
     PreflightMaxSeconds = $PreflightMaxSeconds
     AutoRecoverOnStop = $autoRecoverLiteral
     AutoRecoverMaxRestarts = $AutoRecoverMaxRestarts
@@ -724,6 +734,23 @@ function Get-PendingPhases {
     foreach ($line in @(Get-Content -Path $RoadmapFile)) {
         $parsed = Try-ParseRoadmapPhaseLine -Line ([string]$line)
         if ($null -eq $parsed -or $parsed.IsComplete) { continue }
+        $phases += [int]$parsed.PhaseId
+    }
+
+    return @($phases | Sort-Object -Unique)
+}
+
+function Get-PendingSplitPhases {
+    param([string]$RoadmapFile)
+
+    if (-not (Test-Path $RoadmapFile)) { return @() }
+    $phases = @()
+
+    foreach ($line in @(Get-Content -Path $RoadmapFile)) {
+        $text = [string]$line
+        $parsed = Try-ParseRoadmapPhaseLine -Line $text
+        if ($null -eq $parsed -or $parsed.IsComplete) { continue }
+        if (-not ($text -match '(?i)\(Split\s+\d+/\d+\s+from\s+Phase\s+\d+\)')) { continue }
         $phases += [int]$parsed.PhaseId
     }
 
@@ -1494,6 +1521,112 @@ function Get-RoadmapPhaseBlock {
     }
 }
 
+function Get-PhaseSplitMetadata {
+    param(
+        [int]$PhaseId,
+        [string]$RoadmapFile = $script:ResolvedRoadmapPath
+    )
+
+    $block = Get-RoadmapPhaseBlock -RoadmapFile $RoadmapFile -PhaseId $PhaseId
+    if ($null -eq $block) {
+        return [PSCustomObject]@{
+            IsSplit         = $false
+            SplitDepth      = 0
+            RootPhaseId     = 0
+            ParentPhaseId   = 0
+            AncestorPhaseIds = @()
+            Heading         = ""
+        }
+    }
+
+    $heading = [string]$block.Lines[$block.Start]
+    $matches = [regex]::Matches($heading, '(?i)\(Split\s+\d+/\d+\s+from\s+Phase\s+(\d+)\)')
+    $ancestors = New-Object System.Collections.Generic.List[int]
+    foreach ($m in $matches) {
+        if (-not $m.Success -or $m.Groups.Count -lt 2) { continue }
+        $id = 0
+        if (-not [int]::TryParse([string]$m.Groups[1].Value, [ref]$id)) { continue }
+        $ancestors.Add($id) | Out-Null
+    }
+
+    $depth = $ancestors.Count
+    $rootId = if ($depth -gt 0) { [int]$ancestors[0] } else { 0 }
+    $parentId = if ($depth -gt 0) { [int]$ancestors[$depth - 1] } else { 0 }
+
+    return [PSCustomObject]@{
+        IsSplit          = ($depth -gt 0)
+        SplitDepth       = $depth
+        RootPhaseId      = $rootId
+        ParentPhaseId    = $parentId
+        AncestorPhaseIds = @($ancestors.ToArray())
+        Heading          = $heading
+    }
+}
+
+function Get-PhasesBySplitRoot {
+    param(
+        [int]$RootPhaseId,
+        [string]$RoadmapFile = $script:ResolvedRoadmapPath,
+        [switch]$OnlyPending,
+        [switch]$OnlyCompleted
+    )
+
+    if ($RootPhaseId -le 0) { return @() }
+    if (-not (Test-Path $RoadmapFile)) { return @() }
+
+    $pattern = ("(?i)\(Split\s+\d+/\d+\s+from\s+Phase\s+{0}\)" -f [regex]::Escape([string]$RootPhaseId))
+    $results = @()
+
+    foreach ($line in @(Get-Content -Path $RoadmapFile)) {
+        $text = [string]$line
+        $parsed = Try-ParseRoadmapPhaseLine -Line $text
+        if ($null -eq $parsed) { continue }
+        if (-not ($text -match $pattern)) { continue }
+        if ($OnlyPending -and $parsed.IsComplete) { continue }
+        if ($OnlyCompleted -and -not $parsed.IsComplete) { continue }
+        $results += [int]$parsed.PhaseId
+    }
+
+    return @($results | Sort-Object -Unique)
+}
+
+function Get-SplitGuardDecision {
+    param([int]$PhaseId)
+
+    $metadata = Get-PhaseSplitMetadata -PhaseId $PhaseId -RoadmapFile $script:ResolvedRoadmapPath
+    $depthLimit = [Math]::Max(0, [int]$ExecuteMaxSplitDepth)
+    if ($metadata.SplitDepth -ge $depthLimit) {
+        return [PSCustomObject]@{
+            Allowed = $false
+            Reason  = ("max split depth reached depth={0} limit={1}" -f $metadata.SplitDepth, $depthLimit)
+        }
+    }
+
+    $pendingSplitLimit = [Math]::Max(1, [int]$ExecutePendingSplitPhaseLimit)
+    $pendingSplitCount = @(Get-PendingSplitPhases -RoadmapFile $script:ResolvedRoadmapPath).Count
+    if ($pendingSplitCount -ge $pendingSplitLimit) {
+        return [PSCustomObject]@{
+            Allowed = $false
+            Reason  = ("pending split phase budget reached pending_split={0} limit={1}" -f $pendingSplitCount, $pendingSplitLimit)
+        }
+    }
+
+    $rootPhaseId = if ($metadata.RootPhaseId -gt 0) { [int]$metadata.RootPhaseId } else { [int]$PhaseId }
+    $rootLimit = [Math]::Max(1, [int]$ExecuteSplitRootPhaseLimit)
+    $rootDescendantCount = @(Get-PhasesBySplitRoot -RootPhaseId $rootPhaseId -RoadmapFile $script:ResolvedRoadmapPath).Count
+    if ($rootDescendantCount -ge $rootLimit) {
+        return [PSCustomObject]@{
+            Allowed = $false
+            Reason  = ("split lineage budget reached root_phase={0} descendants={1} limit={2}" -f $rootPhaseId, $rootDescendantCount, $rootLimit)
+        }
+    }
+
+    return [PSCustomObject]@{
+        Allowed = $true
+        Reason  = "allowed"
+    }
+}
+
 function Get-PhaseFindingReferencesFromRoadmap {
     param(
         [int]$PhaseId,
@@ -1837,8 +1970,11 @@ function Get-ClosedFindingRefsFromPrioritizedTasks {
     return @($refs.ToArray() | Sort-Object -Unique)
 }
 
-function Get-CodeRequiredFindingRefs {
-    param([string[]]$FindingRefs)
+function Test-IsActionableFindingRef {
+    param([string]$FindingRef)
+
+    $ref = ([string]$FindingRef).Trim().ToUpperInvariant()
+    if ([string]::IsNullOrWhiteSpace($ref)) { return $false }
 
     $evidenceOnlyPrefixes = @(
         "AUTO-DEV-",
@@ -1846,8 +1982,51 @@ function Get-CodeRequiredFindingRefs {
         "RUNTIME-",
         "CODE-REVIEW-REMEDIATION-",
         "HIGH-FRONTEND-RUNTIME-GATE-VERIFICATION",
-        "HIGH-FRONTEND-RUNTIME-GATE-VERIFICATION-BUNDLE"
+        "HIGH-FRONTEND-RUNTIME-GATE-VERIFICATION-BUNDLE",
+        "HIGH-FRONTEND-API-BASE-URL-RUNTIME-ALIGNMENT",
+        "DEEPREVIEW-AGGREGATED-",
+        "FINALREVIEW-",
+        "BLOCKER-REVIEW-INTEGRITY-RECOVERY",
+        "NON-PHASE-",
+        "PHASE-"
     )
+    foreach ($prefix in $evidenceOnlyPrefixes) {
+        if ($ref.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+    }
+
+    $evidenceOnlyExact = @(
+        "END-TO-END",
+        "SOURCE-OF-TRUTH",
+        "REMEDIATION-PHASE-SYNTHESIS",
+        "RENDER-REVIEW-DOCS",
+        "DETERMINISTIC-PARITY-COMMAND",
+        "DETERMINISTIC-PARITY-RUN",
+        "TECH-WEB-CHATAI",
+        "NON-BASE-URL"
+    )
+    if ($evidenceOnlyExact -contains $ref) {
+        return $false
+    }
+
+    if ($ref -match '(?i)-\d{3,5}$') {
+        return $true
+    }
+
+    if ($ref -match '^[A-Z]{2,12}-[BHML]\d{2,5}$') {
+        return $true
+    }
+
+    if ($ref -match '^[A-Z]{2,12}-(BLOCKER|HIGH|MEDIUM|LOW)-[A-Z0-9-]+$') {
+        return $true
+    }
+
+    return $false
+}
+
+function Get-CodeRequiredFindingRefs {
+    param([string[]]$FindingRefs)
 
     $closedSet = New-Object System.Collections.Generic.HashSet[string]
     foreach ($item in @(Get-ClosedFindingRefsFromPrioritizedTasks)) {
@@ -1860,15 +2039,7 @@ function Get-CodeRequiredFindingRefs {
     foreach ($item in @($FindingRefs)) {
         $ref = ([string]$item).Trim().ToUpperInvariant()
         if ([string]::IsNullOrWhiteSpace($ref)) { continue }
-
-        $isEvidenceOnly = $false
-        foreach ($prefix in $evidenceOnlyPrefixes) {
-            if ($ref.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-                $isEvidenceOnly = $true
-                break
-            }
-        }
-        if ($isEvidenceOnly) { continue }
+        if (-not (Test-IsActionableFindingRef -FindingRef $ref)) { continue }
         if ($closedSet.Contains($ref)) { continue }
 
         if (-not $required.Contains($ref)) {
@@ -1877,6 +2048,76 @@ function Get-CodeRequiredFindingRefs {
     }
 
     return @($required.ToArray() | Sort-Object -Unique)
+}
+
+function Test-PhaseActionableFindingsCoveredByCompletedLineage {
+    param(
+        [int]$PhaseId,
+        [string[]]$ActionableFindingRefs
+    )
+
+    $targets = @($ActionableFindingRefs | ForEach-Object { ([string]$_).Trim().ToUpperInvariant() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique)
+    if ($targets.Count -eq 0) { return $false }
+
+    $metadata = Get-PhaseSplitMetadata -PhaseId $PhaseId -RoadmapFile $script:ResolvedRoadmapPath
+    if (-not $metadata.IsSplit -or $metadata.RootPhaseId -le 0) { return $false }
+
+    $completedLineage = @(Get-PhasesBySplitRoot -RootPhaseId ([int]$metadata.RootPhaseId) -RoadmapFile $script:ResolvedRoadmapPath -OnlyCompleted)
+    if ($completedLineage.Count -eq 0) { return $false }
+
+    $covered = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($id in $completedLineage) {
+        $candidateId = [int]$id
+        if ($candidateId -eq $PhaseId) { continue }
+        $refs = @(Get-PhaseFindingReferencesFromRoadmap -PhaseId $candidateId -RoadmapFile $script:ResolvedRoadmapPath)
+        foreach ($item in @($refs)) {
+            $ref = ([string]$item).Trim().ToUpperInvariant()
+            if ([string]::IsNullOrWhiteSpace($ref)) { continue }
+            [void]$covered.Add($ref)
+        }
+    }
+
+    foreach ($target in $targets) {
+        if (-not $covered.Contains($target)) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Get-AutoCloseSplitArtifactPhases {
+    param([int[]]$PhaseIds)
+
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($phaseId in @($PhaseIds | Sort-Object -Unique)) {
+        $id = [int]$phaseId
+        $metadata = Get-PhaseSplitMetadata -PhaseId $id -RoadmapFile $script:ResolvedRoadmapPath
+        if (-not $metadata.IsSplit) { continue }
+
+        $findingRefs = @(Get-PhaseFindingReferences -PhaseId $id)
+        if ($findingRefs.Count -eq 0) {
+            $findingRefs = @(Get-PhaseFindingReferencesFromRoadmap -PhaseId $id -RoadmapFile $script:ResolvedRoadmapPath)
+        }
+        $requiredRefs = @(Get-CodeRequiredFindingRefs -FindingRefs $findingRefs)
+
+        if ($requiredRefs.Count -eq 0) {
+            $rows.Add([PSCustomObject]@{
+                    PhaseId = $id
+                    Reason  = "split-artifact-no-actionable-findings"
+                }) | Out-Null
+            continue
+        }
+
+        if (Test-PhaseActionableFindingsCoveredByCompletedLineage -PhaseId $id -ActionableFindingRefs $requiredRefs) {
+            $rows.Add([PSCustomObject]@{
+                    PhaseId = $id
+                    Reason  = "split-artifact-actionable-findings-covered-by-completed-lineage"
+                }) | Out-Null
+        }
+    }
+
+    return @($rows.ToArray())
 }
 
 function Reset-PhaseForResearchPlan {
@@ -1921,10 +2162,23 @@ function Split-PhaseIntoSubphases {
     )
 
     $partsSafe = [Math]::Max(2, [int]$Parts)
+    $guard = Get-SplitGuardDecision -PhaseId $PhaseId
+    if (-not $guard.Allowed) {
+        return [PSCustomObject]@{
+            Success = $false
+            GuardBlocked = $true
+            Message = ("split guard prevented subphase creation: {0}" -f $guard.Reason)
+            NewPhaseIds = @()
+            FindingsMap = @()
+            RemovedArtifacts = @()
+        }
+    }
+
     $block = Get-RoadmapPhaseBlock -RoadmapFile $script:ResolvedRoadmapPath -PhaseId $PhaseId
     if ($null -eq $block) {
         return [PSCustomObject]@{
             Success = $false
+            GuardBlocked = $false
             Message = "phase block not found in roadmap"
             NewPhaseIds = @()
             FindingsMap = @()
@@ -2051,6 +2305,7 @@ function Split-PhaseIntoSubphases {
 
     return [PSCustomObject]@{
         Success = $true
+        GuardBlocked = $false
         Message = "phase split complete"
         NewPhaseIds = $newPhaseIds
         FindingsMap = @($findingsMapText.ToArray())
@@ -3111,8 +3366,13 @@ Write-Host ("Heartbeat check (sec): {0}" -f $HeartbeatCheckSeconds) -ForegroundC
 Write-Host ("Stall threshold (sec): {0}" -f $LongProcessStallSeconds) -ForegroundColor White
 Write-Host ("Stall split threshold: {0}" -f $ExecuteStallSplitThreshold) -ForegroundColor White
 Write-Host ("Stall split parts:     {0}" -f $ExecuteStallSplitParts) -ForegroundColor White
+Write-Host ("Max split depth:       {0}" -f $ExecuteMaxSplitDepth) -ForegroundColor White
+Write-Host ("Split root cap:        {0}" -f $ExecuteSplitRootPhaseLimit) -ForegroundColor White
+Write-Host ("Pending split cap:     {0}" -f $ExecutePendingSplitPhaseLimit) -ForegroundColor White
+Write-Host ("Unsplittable retries:  {0}" -f $ExecuteUnsplittableRetryLimit) -ForegroundColor White
 Write-Host ("Research ETA model:    {0}s + {1}s/finding" -f $ResearchEtaBaseSeconds, $ResearchEtaPerFindingSeconds) -ForegroundColor White
 Write-Host ("Planning ETA model:    {0}s + {1}s/finding" -f $PlanningEtaBaseSeconds, $PlanningEtaPerFindingSeconds) -ForegroundColor White
+Write-Host ("Auto-close artifacts:  {0}" -f $AutoCloseNonActionableSplitPhases) -ForegroundColor White
 Write-Host ("Preflight max (sec):   {0}" -f $PreflightMaxSeconds) -ForegroundColor White
 Write-Host ("Auto recover on stop:  {0}" -f $AutoRecoverOnStop) -ForegroundColor White
 Write-Host ("Max auto restarts:     {0}" -f $AutoRecoverMaxRestarts) -ForegroundColor White
@@ -3163,6 +3423,29 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                     $stopReason = "phase-pass-limit-hit"
                     $cycleAbort = $true
                     break
+                }
+
+                if ($AutoCloseNonActionableSplitPhases) {
+                    $autoCloseRows = @(Get-AutoCloseSplitArtifactPhases -PhaseIds $pendingForPass)
+                    if ($autoCloseRows.Count -gt 0) {
+                        $autoCloseIds = @($autoCloseRows | ForEach-Object { [int]$_.PhaseId } | Sort-Object -Unique)
+                        $closed = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds $autoCloseIds -Complete
+                        if ($closed) {
+                            $autoCloseText = Join-IntList -Values $autoCloseIds -MaxItems 12
+                            $reasonEntries = @($autoCloseRows | ForEach-Object { "{0}:{1}" -f ([int]$_.PhaseId), ([string]$_.Reason) })
+                            $reasonText = Join-StringList -Values $reasonEntries -MaxItems 12
+                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-pass-autoclose-split-artifacts" -Doing ("auto-closed split artifact phases={0} reasons={1} pass={2}" -f $autoCloseText, $reasonText, $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
+                            Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds $autoCloseIds -LogName "-" -Force
+                        }
+
+                        $pendingForPass = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                        if ($pendingForPass.Count -eq 0) {
+                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-pass-complete" -Doing ("all pending phases completed within cycle after pass={0}" -f $phasePass) -Phase "-" -IsRunning $false -LogName "-"
+                            break
+                        }
+
+                        $phaseText = [string]$pendingForPass[0]
+                    }
                 }
 
                 $researchTargets = @(Get-PhasesNeedingResearch -PhaseIds $pendingForPass)
@@ -3296,6 +3579,36 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                                     $removedText = Join-StringList -Values @($split.RemovedArtifacts) -MaxItems 8
                                     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-split-phase" -Doing ("phase {0} split after repeated stalls into phases={1}; findings_map={2}; removed_artifacts={3}; requeue_path=research->plan->execute(same-cycle)" -f $phaseId, $splitIdsText, $splitMapText, $removedText) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
                                     Clear-ExecuteStallCount -PhaseId $phaseId
+                                } elseif ($split.GuardBlocked) {
+                                    $autoClosed = $false
+                                    if ($AutoCloseNonActionableSplitPhases) {
+                                        $closeCandidates = @(Get-AutoCloseSplitArtifactPhases -PhaseIds @($phaseId))
+                                        if ($closeCandidates.Count -gt 0) {
+                                            $closed = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds @($phaseId) -Complete
+                                            if ($closed) {
+                                                $autoClosed = $true
+                                                $phaseCompleted = $true
+                                                $closeReason = Join-StringList -Values @($closeCandidates | ForEach-Object { [string]$_.Reason }) -MaxItems 4
+                                                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-autoclose-split-artifact" -Doing ("phase {0} auto-closed after split guard block; reason={1}; findings={2}" -f $phaseId, $closeReason, $findingRefs) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                                                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds @($phaseId) -LogName (Split-Path -Leaf $execLog) -Force
+                                                Clear-ExecuteStallCount -PhaseId $phaseId
+                                            }
+                                        }
+                                    }
+
+                                    if (-not $autoClosed) {
+                                        $retryLimit = [Math]::Max([Math]::Max(2, [int]$ExecuteStallSplitThreshold), [int]$ExecuteUnsplittableRetryLimit)
+                                        if ($stallCount -ge $retryLimit) {
+                                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-unsplittable-stop" -Doing ("phase {0} stalled and split-blocked after {1} retries; reason={2}; stopping for deterministic recovery" -f $phaseId, $stallCount, $split.Message) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                                            $stopReason = "execute-unsplittable-stall"
+                                            $cycleAbort = $true
+                                        } else {
+                                            $reset = Reset-PhaseForResearchPlan -PhaseId $phaseId
+                                            $phaseCompleted = $false
+                                            $removedText = Join-StringList -Values @($reset.RemovedArtifacts) -MaxItems 8
+                                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reset-research-plan" -Doing ("phase {0} reset for rework: split blocked ({1}); removed_artifacts={2}; reopened={3}; retry={4}/{5}; requeue_path=research->plan->execute(same-cycle)" -f $phaseId, $split.Message, $removedText, $reset.Reopened, $stallCount, $retryLimit) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                                        }
+                                    }
                                 } else {
                                     $reset = Reset-PhaseForResearchPlan -PhaseId $phaseId
                                     $phaseCompleted = $false
@@ -3320,6 +3633,10 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                         } else {
                             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute incomplete; remains pending code_generated={1} new_commits={2} code_files={3} code_files_changed={4} findings={5} uncoded_findings={6} pass={7}" -f $phaseId, $(if ($codeEvidence.CodeGenerated) { "yes" } else { "no" }), $signal.NewCommits, $signal.CodeFilesNow, $changedFilesText, $findingRefs, $uncodedFindingsText, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
                         }
+
+                        if ($cycleAbort) {
+                            break
+                        }
                     }
 
                     $pendingAfterExecute = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
@@ -3327,6 +3644,10 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                     $pendingForPass = @($pendingAfterExecute)
                 } else {
                     $pendingForPass = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
+                }
+
+                if ($cycleAbort) {
+                    break
                 }
 
                 if ($pendingForPass.Count -gt 0) {
