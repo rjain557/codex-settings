@@ -710,17 +710,37 @@ function Try-ParseRoadmapPhaseLine {
 
     $match = [regex]::Match(
         $Line,
-        '^\s*-\s*\[([ xX])\]\s*(?:\*\*)?Phase\s+(\d+)(?::|\b)',
+        '^\s*-\s*\[([ xX])\]\s*(?:\*\*)?Phase\s+(\d+)(?:\s*-\s*(\d+))?(?::|\b)',
         [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
     )
     if (-not $match.Success) { return $null }
 
-    $phaseId = 0
-    if (-not [int]::TryParse([string]$match.Groups[2].Value, [ref]$phaseId)) { return $null }
+    $phaseStart = 0
+    if (-not [int]::TryParse([string]$match.Groups[2].Value, [ref]$phaseStart)) { return $null }
+
+    $phaseEnd = $phaseStart
+    $isRange = $false
+    if ($match.Groups.Count -ge 4 -and -not [string]::IsNullOrWhiteSpace([string]$match.Groups[3].Value)) {
+        $tmpEnd = 0
+        if ([int]::TryParse([string]$match.Groups[3].Value, [ref]$tmpEnd) -and $tmpEnd -ge $phaseStart -and ($tmpEnd - $phaseStart) -le 200) {
+            $phaseEnd = $tmpEnd
+            $isRange = ($phaseEnd -gt $phaseStart)
+        }
+    }
+
+    $phaseIds = New-Object System.Collections.Generic.List[int]
+    for ($pid = $phaseStart; $pid -le $phaseEnd; $pid++) {
+        $phaseIds.Add([int]$pid) | Out-Null
+    }
+
     $isComplete = ([string]$match.Groups[1].Value -match '^[xX]$')
 
     return [PSCustomObject]@{
-        PhaseId    = $phaseId
+        PhaseId    = $phaseStart
+        PhaseIds   = @($phaseIds.ToArray())
+        IsRange    = $isRange
+        RangeStart = $phaseStart
+        RangeEnd   = $phaseEnd
         IsComplete = $isComplete
     }
 }
@@ -734,7 +754,7 @@ function Get-PendingPhases {
     foreach ($line in @(Get-Content -Path $RoadmapFile)) {
         $parsed = Try-ParseRoadmapPhaseLine -Line ([string]$line)
         if ($null -eq $parsed -or $parsed.IsComplete) { continue }
-        $phases += [int]$parsed.PhaseId
+        $phases += @($parsed.PhaseIds)
     }
 
     return @($phases | Sort-Object -Unique)
@@ -751,7 +771,7 @@ function Get-PendingSplitPhases {
         $parsed = Try-ParseRoadmapPhaseLine -Line $text
         if ($null -eq $parsed -or $parsed.IsComplete) { continue }
         if (-not ($text -match '(?i)\(Split\s+\d+/\d+\s+from\s+Phase\s+\d+\)')) { continue }
-        $phases += [int]$parsed.PhaseId
+        $phases += @($parsed.PhaseIds)
     }
 
     return @($phases | Sort-Object -Unique)
@@ -766,7 +786,7 @@ function Get-CompletedPhases {
     foreach ($line in @(Get-Content -Path $RoadmapFile)) {
         $parsed = Try-ParseRoadmapPhaseLine -Line ([string]$line)
         if ($null -eq $parsed -or -not $parsed.IsComplete) { continue }
-        $phases += [int]$parsed.PhaseId
+        $phases += @($parsed.PhaseIds)
     }
 
     return @($phases | Sort-Object -Unique)
@@ -1280,7 +1300,7 @@ function Get-AllPhases {
     foreach ($line in @(Get-Content -Path $RoadmapFile)) {
         $parsed = Try-ParseRoadmapPhaseLine -Line ([string]$line)
         if ($null -eq $parsed) { continue }
-        $phases += [int]$parsed.PhaseId
+        $phases += @($parsed.PhaseIds)
     }
 
     return @($phases | Sort-Object -Unique)
@@ -1414,8 +1434,15 @@ function Set-RoadmapPhaseCompletionState {
         $parsed = Try-ParseRoadmapPhaseLine -Line $line
         if ($null -eq $parsed) { continue }
 
-        $phaseId = [int]$parsed.PhaseId
-        if (-not $phaseSet.Contains($phaseId)) { continue }
+        $linePhaseIds = @($parsed.PhaseIds)
+        $lineMatches = $false
+        foreach ($candidateId in $linePhaseIds) {
+            if ($phaseSet.Contains([int]$candidateId)) {
+                $lineMatches = $true
+                break
+            }
+        }
+        if (-not $lineMatches) { continue }
 
         $newLine = [regex]::Replace($line, '^\s*-\s*\[[ xX]\]', ("- [{0}]" -f $targetToken), 1)
         if ($newLine -ne $line) {
@@ -1514,8 +1541,8 @@ function Get-RoadmapPhaseBlock {
         $parsed = Try-ParseRoadmapPhaseLine -Line $line
         if ($null -eq $parsed) { continue }
 
-        $candidate = [int]$parsed.PhaseId
-        if ($candidate -ne $PhaseId) { continue }
+        $linePhaseIds = @($parsed.PhaseIds)
+        if ($linePhaseIds -notcontains [int]$PhaseId) { continue }
         $start = $i
         break
     }
@@ -1548,7 +1575,7 @@ function Get-PhaseTitleFromRoadmap {
     if ($null -eq $block) { return ("Phase-{0}" -f $PhaseId) }
 
     $heading = [string]$block.Lines[$block.Start]
-    $titleText = [regex]::Replace($heading, '^\s*-\s*\[[ xX]\]\s*(?:\*\*)?Phase \d+:\s*', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $titleText = [regex]::Replace($heading, '^\s*-\s*\[[ xX]\]\s*(?:\*\*)?Phase \d+(?:\s*-\s*\d+)?:\s*', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     $titleText = [regex]::Replace($titleText, '\*\*$', '')
     $titleText = [regex]::Replace($titleText, '\s*\(~\s*[0-9]+(?:\.[0-9]+)?h\)\s*$', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     $titleText = $titleText.Trim()
@@ -1770,7 +1797,7 @@ function Get-PhasesBySplitRoot {
         if (-not ($text -match $pattern)) { continue }
         if ($OnlyPending -and $parsed.IsComplete) { continue }
         if ($OnlyCompleted -and -not $parsed.IsComplete) { continue }
-        $results += [int]$parsed.PhaseId
+        $results += @($parsed.PhaseIds)
     }
 
     return @($results | Sort-Object -Unique)
@@ -2374,7 +2401,7 @@ function Split-PhaseIntoSubphases {
 
     $lines = @($block.Lines)
     $heading = [string]$lines[$block.Start]
-    $titleText = [regex]::Replace($heading, '^\s*-\s*\[[ xX]\]\s*(?:\*\*)?Phase \d+:\s*', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $titleText = [regex]::Replace($heading, '^\s*-\s*\[[ xX]\]\s*(?:\*\*)?Phase \d+(?:\s*-\s*\d+)?:\s*', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     $titleText = [regex]::Replace($titleText, '\*\*$', '')
     $titleText = $titleText.Trim()
 
