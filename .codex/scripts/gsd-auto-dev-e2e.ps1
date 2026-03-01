@@ -16,6 +16,7 @@ param(
     [string]$StatusFile = ".planning/agent-output/gsd-e2e-status.log",
     [int]$HeartbeatSeconds = 60,
     [int]$HeartbeatCheckSeconds = 30,
+    [int]$LongProcessStallSeconds = 600,
     [int]$PreflightMaxSeconds = 180,
     [bool]$AutoRecoverOnStop = $true,
     [int]$AutoRecoverMaxRestarts = 40,
@@ -184,6 +185,7 @@ if ($OpenWindow) {
     StatusFile = '$statusEsc'
     HeartbeatSeconds = $HeartbeatSeconds
     HeartbeatCheckSeconds = $HeartbeatCheckSeconds
+    LongProcessStallSeconds = $LongProcessStallSeconds
     PreflightMaxSeconds = $PreflightMaxSeconds
     AutoRecoverOnStop = $autoRecoverLiteral
     AutoRecoverMaxRestarts = $AutoRecoverMaxRestarts
@@ -1916,6 +1918,26 @@ function Write-ProgressUpdate {
     }
 }
 
+function Get-CombinedFileBytes {
+    param(
+        [string[]]$Paths
+    )
+
+    $total = [int64]0
+    foreach ($path in @($Paths)) {
+        if ([string]::IsNullOrWhiteSpace([string]$path)) { continue }
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            $item = Get-Item -LiteralPath $path -ErrorAction Stop
+            if ($item -and $null -ne $item.Length) {
+                $total += [int64]$item.Length
+            }
+        } catch { }
+    }
+
+    return $total
+}
+
 function Invoke-GlobalSkillMonitored {
     param(
         [string]$Prompt,
@@ -1969,6 +1991,9 @@ function Invoke-GlobalSkillMonitored {
     $trackedSubstageSeen = $false
     $forcedExitCode = $null
     $stageHint = if ([string]::IsNullOrWhiteSpace($Stage)) { "" } else { ([string]$Stage -replace '\s+', '-').ToLowerInvariant() }
+    $stallThresholdSeconds = [math]::Max(60, [int]$LongProcessStallSeconds)
+    $lastLogBytes = Get-CombinedFileBytes -Paths @($LogFile, $errFile)
+    $lastLogGrowthAt = Get-Date
 
     # When this invocation is already a specific tracked stage, treat it as active immediately.
     # This avoids false preflight stalls for quiet-but-legitimate long-running execute/review calls.
@@ -2043,7 +2068,15 @@ function Invoke-GlobalSkillMonitored {
         $heartbeatDue = (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $heartbeatIntervalSeconds)
         $heartbeatCheckDue = (((Get-Date) - $lastHeartbeatCheck).TotalSeconds -ge $heartbeatCheckIntervalSeconds)
         if ($heartbeatCheckDue) {
-            $heartbeatDoing = ("heartbeat-check substage={0} phase={1} interval={2}s" -f $substage, $runningPhase, $heartbeatCheckIntervalSeconds)
+            $logBytesNow = Get-CombinedFileBytes -Paths @($LogFile, $errFile)
+            $logGrowthBytes = [int64]($logBytesNow - $lastLogBytes)
+            if ($logGrowthBytes -ne 0) {
+                $lastLogGrowthAt = Get-Date
+                $lastLogBytes = $logBytesNow
+            }
+            $logIdleSeconds = [int][math]::Round(((Get-Date) - $lastLogGrowthAt).TotalSeconds)
+
+            $heartbeatDoing = ("heartbeat-check substage={0} phase={1} interval={2}s log_bytes={3} log_growth={4} idle_s={5}/{6}" -f $substage, $runningPhase, $heartbeatCheckIntervalSeconds, $logBytesNow, $logGrowthBytes, $logIdleSeconds, $stallThresholdSeconds)
             if ($substage -eq "execute") {
                 $phaseInt = 0
                 $findingRefsText = "unknown"
@@ -2055,6 +2088,29 @@ function Invoke-GlobalSkillMonitored {
 
             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-heartbeat-check-{1}" -f $Stage, $substage) -Doing $heartbeatDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
             $lastHeartbeatCheck = Get-Date
+
+            if ($logIdleSeconds -ge $stallThresholdSeconds) {
+                $stallDoing = ("stalled no-log-growth idle={0}s threshold={1}s substage={2}; stopping and retrying next cycle" -f $logIdleSeconds, $stallThresholdSeconds, $substage)
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-stalled-no-log-growth" -f $Stage) -Doing $stallDoing -Phase $runningPhase -IsRunning $true -LogName (Split-Path -Leaf $LogFile)
+
+                try {
+                    $childPids = @()
+                    try {
+                        $childPids = @(Get-CimInstance Win32_Process -Filter ("ParentProcessId = {0}" -f $proc.Id) -ErrorAction Stop | Select-Object -ExpandProperty ProcessId)
+                    } catch {
+                        $childPids = @()
+                    }
+
+                    foreach ($childPid in $childPids) {
+                        try { Stop-Process -Id $childPid -Force -ErrorAction Stop } catch { }
+                    }
+
+                    try { Stop-Process -Id $proc.Id -Force -ErrorAction Stop } catch { }
+                } catch { }
+
+                $forcedExitCode = 124
+                break
+            }
         }
         if ($heartbeatDue -or $substageChanged) {
             $runningDoing = $Doing
@@ -2213,6 +2269,12 @@ function Invoke-GlobalSkillParallelPhaseBatch {
     $heartbeatCheckIntervalSeconds = [math]::Max(5, [int]$HeartbeatCheckSeconds)
     $lastHeartbeat = (Get-Date).AddSeconds(-1 * $heartbeatIntervalSeconds)
     $lastHeartbeatCheck = Get-Date
+    $stallThresholdSeconds = [math]::Max(60, [int]$LongProcessStallSeconds)
+    $lastBatchBytes = [int64]0
+    foreach ($workerSeed in $workers) {
+        $lastBatchBytes += Get-CombinedFileBytes -Paths @($workerSeed.LogFile, $workerSeed.ErrFile)
+    }
+    $lastBatchGrowthAt = Get-Date
     while (@($workers | Where-Object { -not $_.Completed }).Count -gt 0) {
         $runningPhases = New-Object System.Collections.Generic.List[int]
 
@@ -2238,13 +2300,37 @@ function Invoke-GlobalSkillParallelPhaseBatch {
 
         $completedCount = @($workers | Where-Object { $_.Completed }).Count
         $totalCount = $workers.Count
+        $batchBytesNow = [int64]0
+        foreach ($workerBytes in $workers) {
+            $batchBytesNow += Get-CombinedFileBytes -Paths @($workerBytes.LogFile, $workerBytes.ErrFile)
+        }
+        $batchGrowthBytes = [int64]($batchBytesNow - $lastBatchBytes)
+        if ($batchGrowthBytes -ne 0) {
+            $lastBatchGrowthAt = Get-Date
+            $lastBatchBytes = $batchBytesNow
+        }
+        $batchIdleSeconds = [int][math]::Round(((Get-Date) - $lastBatchGrowthAt).TotalSeconds)
         $heartbeatDue = (((Get-Date) - $lastHeartbeat).TotalSeconds -ge $heartbeatIntervalSeconds)
         $heartbeatCheckDue = (((Get-Date) - $lastHeartbeatCheck).TotalSeconds -ge $heartbeatCheckIntervalSeconds)
         if ($heartbeatCheckDue) {
             $runningList = Join-IntList -Values @($runningPhases.ToArray()) -MaxItems 20
             $runningPhase = if ($runningPhases.Count -gt 0) { [string]$runningPhases[0] } else { "-" }
-            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-parallel-heartbeat-check" -f $Stage) -Doing ("parallel {0} heartbeat-check running phases={1} completed={2}/{3} pass={4} interval={5}s" -f $stageSafe, $runningList, $completedCount, $totalCount, $Pass, $heartbeatCheckIntervalSeconds) -Phase $runningPhase -IsRunning $true -LogName "-"
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-parallel-heartbeat-check" -f $Stage) -Doing ("parallel {0} heartbeat-check running phases={1} completed={2}/{3} pass={4} interval={5}s log_bytes={6} log_growth={7} idle_s={8}/{9}" -f $stageSafe, $runningList, $completedCount, $totalCount, $Pass, $heartbeatCheckIntervalSeconds, $batchBytesNow, $batchGrowthBytes, $batchIdleSeconds, $stallThresholdSeconds) -Phase $runningPhase -IsRunning $true -LogName "-"
             $lastHeartbeatCheck = Get-Date
+
+            if ($batchIdleSeconds -ge $stallThresholdSeconds -and $runningPhases.Count -gt 0) {
+                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-parallel-stalled-no-log-growth" -f $Stage) -Doing ("parallel {0} stalled no-log-growth idle={1}s threshold={2}s running_phases={3}; terminating pass" -f $stageSafe, $batchIdleSeconds, $stallThresholdSeconds, $runningList) -Phase $runningPhase -IsRunning $true -LogName "-"
+
+                foreach ($workerStop in $workers) {
+                    if ($workerStop.Completed) { continue }
+                    try { Stop-Process -Id $workerStop.Process.Id -Force -ErrorAction Stop } catch { }
+                    $workerStop.Completed = $true
+                    $workerStop.ExitCode = 124
+                    $exitMap[[string]$workerStop.PhaseId] = 124
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-phase-exit-124" -f $Stage) -Doing ("{0} phase={1} terminated due to no-log-growth stall pass={2}" -f $stageSafe, $workerStop.PhaseId, $Pass) -Phase ([string]$workerStop.PhaseId) -IsRunning $false -LogName (Split-Path -Leaf $workerStop.LogFile)
+                }
+                continue
+            }
         }
         if ($heartbeatDue) {
             $runningList = Join-IntList -Values @($runningPhases.ToArray()) -MaxItems 20
@@ -2395,6 +2481,7 @@ Write-Host ("Max outer loops:       {0}" -f $MaxOuterLoops) -ForegroundColor Whi
 Write-Host ("Auto-dev max cycles:   {0}" -f $AutoDevMaxCycles) -ForegroundColor White
 Write-Host ("Heartbeat (seconds):   {0}" -f $HeartbeatSeconds) -ForegroundColor White
 Write-Host ("Heartbeat check (sec): {0}" -f $HeartbeatCheckSeconds) -ForegroundColor White
+Write-Host ("Stall threshold (sec): {0}" -f $LongProcessStallSeconds) -ForegroundColor White
 Write-Host ("Preflight max (sec):   {0}" -f $PreflightMaxSeconds) -ForegroundColor White
 Write-Host ("Auto recover on stop:  {0}" -f $AutoRecoverOnStop) -ForegroundColor White
 Write-Host ("Max auto restarts:     {0}" -f $AutoRecoverMaxRestarts) -ForegroundColor White
@@ -2455,9 +2542,25 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                     if (-not [string]::IsNullOrWhiteSpace([string]$researchBatch.LastLogFile)) {
                         $lastAutoDevLog = [string]$researchBatch.LastLogFile
                     }
+                    $researchFailures = @()
+                    foreach ($entry in $researchBatch.ExitMap.GetEnumerator()) {
+                        if ([int]$entry.Value -ne 0) {
+                            $researchFailures += ("{0}:{1}" -f $entry.Key, $entry.Value)
+                        }
+                    }
+                    if ($researchFailures.Count -gt 0) {
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-failed" -Doing ("research batch failed pass={0} failures={1}; stopping for supervisor restart" -f $phasePass, (Join-StringList -Values $researchFailures -MaxItems 20)) -Phase $phaseText -IsRunning $false -LogName "-"
+                        $stopReason = "research-batch-failed"
+                        $cycleAbort = $true
+                        break
+                    }
                     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-complete" -Doing ("completed research phases={0} pass={1}" -f (Join-IntList -Values $researchTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
                 } else {
                     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-skip" -Doing ("research already complete for pending phases={0} pass={1}" -f (Join-IntList -Values $pendingForPass -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
+                }
+
+                if ($cycleAbort) {
+                    break
                 }
 
                 $pendingBeforePlan = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
@@ -2469,9 +2572,25 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                     if (-not [string]::IsNullOrWhiteSpace([string]$planBatch.LastLogFile)) {
                         $lastAutoDevLog = [string]$planBatch.LastLogFile
                     }
+                    $planFailures = @()
+                    foreach ($entry in $planBatch.ExitMap.GetEnumerator()) {
+                        if ([int]$entry.Value -ne 0) {
+                            $planFailures += ("{0}:{1}" -f $entry.Key, $entry.Value)
+                        }
+                    }
+                    if ($planFailures.Count -gt 0) {
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-failed" -Doing ("planning batch failed pass={0} failures={1}; stopping for supervisor restart" -f $phasePass, (Join-StringList -Values $planFailures -MaxItems 20)) -Phase $phaseText -IsRunning $false -LogName "-"
+                        $stopReason = "planning-batch-failed"
+                        $cycleAbort = $true
+                        break
+                    }
                     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-complete" -Doing ("completed planning phases={0} pass={1}" -f (Join-IntList -Values $planTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
                 } else {
                     Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-skip" -Doing ("planning already complete for pending phases={0} pass={1}" -f (Join-IntList -Values $pendingBeforePlan -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
+                }
+
+                if ($cycleAbort) {
+                    break
                 }
 
                 $pendingAfterPlan = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
