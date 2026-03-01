@@ -51,6 +51,84 @@ if (-not $AllowRun) {
     return
 }
 
+function Add-EnvPathEntry {
+    param([string]$Entry)
+
+    if ([string]::IsNullOrWhiteSpace($Entry)) { return }
+    $candidate = $Entry.Trim().Trim('"')
+    if ([string]::IsNullOrWhiteSpace($candidate)) { return }
+    if (-not (Test-Path -LiteralPath $candidate)) { return }
+
+    $existing = @()
+    if (-not [string]::IsNullOrWhiteSpace([string]$env:Path)) {
+        $existing = @($env:Path -split ';')
+    }
+
+    $targetNorm = $candidate.TrimEnd('\').ToLowerInvariant()
+    foreach ($item in $existing) {
+        $norm = ([string]$item).Trim().Trim('"').TrimEnd('\').ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($norm)) { continue }
+        if ($norm -eq $targetNorm) { return }
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$env:Path)) {
+        $env:Path = $candidate
+    } else {
+        $env:Path = "$env:Path;$candidate"
+    }
+}
+
+function Normalize-ExecutionEnvironment {
+    $requiredExts = @(".COM", ".EXE", ".BAT", ".CMD")
+    $defaultPathext = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL"
+    $rawPathext = [string]$env:PATHEXT
+
+    $tokens = New-Object System.Collections.Generic.List[string]
+    foreach ($part in @($rawPathext -split ';')) {
+        $item = [string]$part
+        if ([string]::IsNullOrWhiteSpace($item)) { continue }
+        $item = $item.Trim().Trim('"').ToUpperInvariant()
+        if (-not $item.StartsWith(".")) { $item = ".{0}" -f $item }
+        if (-not $tokens.Contains($item)) { $tokens.Add($item) | Out-Null }
+    }
+
+    foreach ($req in $requiredExts) {
+        if (-not $tokens.Contains($req)) {
+            $tokens.Insert(0, $req)
+        }
+    }
+
+    if ($tokens.Count -eq 0) {
+        $env:PATHEXT = $defaultPathext
+    } else {
+        $env:PATHEXT = [string]::Join(";", @($tokens.ToArray()))
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$env:SystemRoot)) {
+        $env:SystemRoot = "C:\Windows"
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$env:ComSpec) -or -not (Test-Path -LiteralPath $env:ComSpec)) {
+        $env:ComSpec = Join-Path $env:SystemRoot "System32\cmd.exe"
+    }
+
+    $pathHints = @(
+        (Join-Path $env:SystemRoot "System32"),
+        (Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0"),
+        (Join-Path $env:SystemRoot "System32\Wbem"),
+        "C:\Program Files\Git\cmd",
+        "C:\Program Files\Git\bin",
+        "C:\Program Files\nodejs",
+        "C:\Program Files\dotnet"
+    )
+
+    foreach ($hint in $pathHints) {
+        Add-EnvPathEntry -Entry $hint
+    }
+}
+
+Normalize-ExecutionEnvironment
+
 function Get-CurrentProcessId {
     return [System.Diagnostics.Process]::GetCurrentProcess().Id
 }
@@ -615,17 +693,38 @@ function Get-BestMetricSnapshot {
     return (Resolve-SummaryMetrics -Path $existing[0].Path)
 }
 
+function Try-ParseRoadmapPhaseLine {
+    param([string]$Line)
+
+    if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
+
+    $match = [regex]::Match(
+        $Line,
+        '^\s*-\s*\[([ xX])\]\s*(?:\*\*)?Phase\s+(\d+)(?::|\b)',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    if (-not $match.Success) { return $null }
+
+    $phaseId = 0
+    if (-not [int]::TryParse([string]$match.Groups[2].Value, [ref]$phaseId)) { return $null }
+    $isComplete = ([string]$match.Groups[1].Value -match '^[xX]$')
+
+    return [PSCustomObject]@{
+        PhaseId    = $phaseId
+        IsComplete = $isComplete
+    }
+}
+
 function Get-PendingPhases {
     param([string]$RoadmapFile)
 
     if (-not (Test-Path $RoadmapFile)) { return @() }
-    $matches = @(Select-String -Path $RoadmapFile -Pattern '^- \[ \] \*\*Phase (\d+):' -CaseSensitive:$false)
     $phases = @()
 
-    foreach ($m in $matches) {
-        if ($m.Matches.Count -gt 0) {
-            $phases += [int]$m.Matches[0].Groups[1].Value
-        }
+    foreach ($line in @(Get-Content -Path $RoadmapFile)) {
+        $parsed = Try-ParseRoadmapPhaseLine -Line ([string]$line)
+        if ($null -eq $parsed -or $parsed.IsComplete) { continue }
+        $phases += [int]$parsed.PhaseId
     }
 
     return @($phases | Sort-Object -Unique)
@@ -635,13 +734,12 @@ function Get-CompletedPhases {
     param([string]$RoadmapFile)
 
     if (-not (Test-Path $RoadmapFile)) { return @() }
-    $matches = @(Select-String -Path $RoadmapFile -Pattern '^- \[[xX]\] \*\*Phase (\d+):' -CaseSensitive:$false)
     $phases = @()
 
-    foreach ($m in $matches) {
-        if ($m.Matches.Count -gt 0) {
-            $phases += [int]$m.Matches[0].Groups[1].Value
-        }
+    foreach ($line in @(Get-Content -Path $RoadmapFile)) {
+        $parsed = Try-ParseRoadmapPhaseLine -Line ([string]$line)
+        if ($null -eq $parsed -or -not $parsed.IsComplete) { continue }
+        $phases += [int]$parsed.PhaseId
     }
 
     return @($phases | Sort-Object -Unique)
@@ -1133,13 +1231,12 @@ function Get-AllPhases {
     param([string]$RoadmapFile)
 
     if (-not (Test-Path $RoadmapFile)) { return @() }
-    $matches = @(Select-String -Path $RoadmapFile -Pattern '^- \[[ xX]\] \*\*Phase (\d+):' -CaseSensitive:$false)
     $phases = @()
 
-    foreach ($m in $matches) {
-        if ($m.Matches.Count -gt 0) {
-            $phases += [int]$m.Matches[0].Groups[1].Value
-        }
+    foreach ($line in @(Get-Content -Path $RoadmapFile)) {
+        $parsed = Try-ParseRoadmapPhaseLine -Line ([string]$line)
+        if ($null -eq $parsed) { continue }
+        $phases += [int]$parsed.PhaseId
     }
 
     return @($phases | Sort-Object -Unique)
@@ -1229,11 +1326,13 @@ function Test-PhaseStageSatisfied {
     $delay = [Math]::Max(0, [int]$RetryDelaySeconds)
 
     for ($attempt = 1; $attempt -le $checks; $attempt++) {
-        $remaining = if ($stageSafe -eq "research") {
-            @(Get-PhasesNeedingResearch -PhaseIds @($PhaseId))
-        } else {
-            @(Get-PhasesNeedingPlan -PhaseIds @($PhaseId))
-        }
+        $remaining = @(
+            if ($stageSafe -eq "research") {
+                @(Get-PhasesNeedingResearch -PhaseIds @($PhaseId))
+            } else {
+                @(Get-PhasesNeedingPlan -PhaseIds @($PhaseId))
+            }
+        )
 
         if ($remaining.Count -eq 0) {
             return $true
@@ -1268,14 +1367,13 @@ function Set-RoadmapPhaseCompletionState {
 
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = [string]$lines[$i]
-        $match = [regex]::Match($line, '^- \[[ xX]\] \*\*Phase (\d+):', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-        if (-not $match.Success) { continue }
+        $parsed = Try-ParseRoadmapPhaseLine -Line $line
+        if ($null -eq $parsed) { continue }
 
-        $phaseId = 0
-        if (-not [int]::TryParse([string]$match.Groups[1].Value, [ref]$phaseId)) { continue }
+        $phaseId = [int]$parsed.PhaseId
         if (-not $phaseSet.Contains($phaseId)) { continue }
 
-        $newLine = [regex]::Replace($line, '^- \[[ xX]\]', ("- [{0}]" -f $targetToken), 1)
+        $newLine = [regex]::Replace($line, '^\s*-\s*\[[ xX]\]', ("- [{0}]" -f $targetToken), 1)
         if ($newLine -ne $line) {
             $lines[$i] = $newLine
             $updated = $true
@@ -1369,11 +1467,10 @@ function Get-RoadmapPhaseBlock {
     $start = -1
     for ($i = 0; $i -lt $lines.Count; $i++) {
         $line = [string]$lines[$i]
-        $match = [regex]::Match($line, '^- \[[ xX]\] \*\*Phase (\d+):', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-        if (-not $match.Success) { continue }
+        $parsed = Try-ParseRoadmapPhaseLine -Line $line
+        if ($null -eq $parsed) { continue }
 
-        $candidate = 0
-        if (-not [int]::TryParse([string]$match.Groups[1].Value, [ref]$candidate)) { continue }
+        $candidate = [int]$parsed.PhaseId
         if ($candidate -ne $PhaseId) { continue }
         $start = $i
         break
@@ -1384,7 +1481,7 @@ function Get-RoadmapPhaseBlock {
     $end = $lines.Count - 1
     for ($j = $start + 1; $j -lt $lines.Count; $j++) {
         $line = [string]$lines[$j]
-        if ($line -match '^- \[[ xX]\] \*\*Phase (\d+):') {
+        if ($null -ne (Try-ParseRoadmapPhaseLine -Line $line)) {
             $end = $j - 1
             break
         }
@@ -1720,6 +1817,68 @@ function Get-FindingCodeEvidenceText {
     return ([string]::Join(";", $entries.ToArray()))
 }
 
+function Get-ClosedFindingRefsFromPrioritizedTasks {
+    $tasksPath = Join-Path $script:ResolvedReviewRoot "PRIORITIZED-TASKS.md"
+    if (-not (Test-Path $tasksPath)) { return @() }
+
+    $refs = New-Object System.Collections.Generic.List[string]
+    foreach ($line in @(Get-Content -Path $tasksPath -ErrorAction SilentlyContinue)) {
+        $text = [string]$line
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        if (-not ($text -match '(?i)\bclosed\b')) { continue }
+
+        foreach ($item in @(Get-FindingRefsFromText -Text $text)) {
+            if (-not $refs.Contains($item)) {
+                $refs.Add($item) | Out-Null
+            }
+        }
+    }
+
+    return @($refs.ToArray() | Sort-Object -Unique)
+}
+
+function Get-CodeRequiredFindingRefs {
+    param([string[]]$FindingRefs)
+
+    $evidenceOnlyPrefixes = @(
+        "AUTO-DEV-",
+        "GSD-BATCH-",
+        "RUNTIME-",
+        "CODE-REVIEW-REMEDIATION-",
+        "HIGH-FRONTEND-RUNTIME-GATE-VERIFICATION",
+        "HIGH-FRONTEND-RUNTIME-GATE-VERIFICATION-BUNDLE"
+    )
+
+    $closedSet = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($item in @(Get-ClosedFindingRefsFromPrioritizedTasks)) {
+        $ref = ([string]$item).Trim().ToUpperInvariant()
+        if ([string]::IsNullOrWhiteSpace($ref)) { continue }
+        [void]$closedSet.Add($ref)
+    }
+
+    $required = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($FindingRefs)) {
+        $ref = ([string]$item).Trim().ToUpperInvariant()
+        if ([string]::IsNullOrWhiteSpace($ref)) { continue }
+
+        $isEvidenceOnly = $false
+        foreach ($prefix in $evidenceOnlyPrefixes) {
+            if ($ref.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $isEvidenceOnly = $true
+                break
+            }
+        }
+        if ($isEvidenceOnly) { continue }
+        if ($closedSet.Contains($ref)) { continue }
+
+        if (-not $required.Contains($ref)) {
+            $required.Add($ref) | Out-Null
+        }
+    }
+
+    return @($required.ToArray() | Sort-Object -Unique)
+}
+
 function Reset-PhaseForResearchPlan {
     param(
         [int]$PhaseId,
@@ -1775,7 +1934,7 @@ function Split-PhaseIntoSubphases {
 
     $lines = @($block.Lines)
     $heading = [string]$lines[$block.Start]
-    $titleText = [regex]::Replace($heading, '^- \[[ xX]\] \*\*Phase \d+:\s*', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $titleText = [regex]::Replace($heading, '^\s*-\s*\[[ xX]\]\s*(?:\*\*)?Phase \d+:\s*', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
     $titleText = [regex]::Replace($titleText, '\*\*$', '')
     $titleText = $titleText.Trim()
 
@@ -2390,9 +2549,15 @@ function Invoke-GlobalSkillMonitored {
         $wslCmd = 'cat "$1" | "$2" exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$3"'
         $proc = Start-Process -FilePath "wsl.exe" -ArgumentList @("bash", "-lc", $wslCmd, "gsd-auto-dev", $promptFileWsl, $script:WslCodexPath, $projectRootWsl) -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardOutput $LogFile -RedirectStandardError $errFile
     } else {
-        # Use stdin piping with --cd . to avoid Windows quoting/splitting issues for spaced paths.
-        $cmd = "type `"{0}`" | `"{1}`" exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd ." -f $promptFile, $script:CodexExe
-        $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardOutput $LogFile -RedirectStandardError $errFile
+        # Avoid cmd.exe wrapper and use direct stdin redirection to prevent PATHEXT/cmd shell drift.
+        $codexArgs = @(
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--skip-git-repo-check",
+            "--cd",
+            "."
+        )
+        $proc = Start-Process -FilePath $script:CodexExe -ArgumentList $codexArgs -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardInput $promptFile -RedirectStandardOutput $LogFile -RedirectStandardError $errFile
     }
 
     $heartbeatIntervalSeconds = [math]::Max(1, [int]$HeartbeatSeconds)
@@ -2672,8 +2837,14 @@ function Invoke-GlobalSkillParallelPhaseBatch {
             $wslCmd = 'cat "$1" | "$2" exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd "$3"'
             $proc = Start-Process -FilePath "wsl.exe" -ArgumentList @("bash", "-lc", $wslCmd, "gsd-auto-dev", $promptFileWsl, $script:WslCodexPath, $projectRootWsl) -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardOutput $logFile -RedirectStandardError $errFile
         } else {
-            $cmd = "type `"{0}`" | `"{1}`" exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --cd ." -f $promptFile, $script:CodexExe
-            $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardOutput $logFile -RedirectStandardError $errFile
+            $codexArgs = @(
+                "exec",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--skip-git-repo-check",
+                "--cd",
+                "."
+            )
+            $proc = Start-Process -FilePath $script:CodexExe -ArgumentList $codexArgs -NoNewWindow -PassThru -WorkingDirectory $script:ResolvedProjectRoot -RedirectStandardInput $promptFile -RedirectStandardOutput $logFile -RedirectStandardError $errFile
         }
 
         $workers.Add([PSCustomObject]@{
@@ -2826,6 +2997,8 @@ Execution contract:
 - Use only global skills from `C:\Users\rjain\.codex\skills`.
 - Assume YES for all prompts/approvals.
 - Do not run repetitive environment diagnostics (no looping tool/version probes).
+- On Windows, prefer PowerShell syntax and direct executable invocations; avoid `cmd.exe` built-ins unless strictly necessary.
+- If command resolution fails, run a one-time PATH/PATHEXT normalization and continue instead of repeating probes.
 - Execute only the requested stage for this invocation: $purposeText.
 - Keep output concise and include completed phase/plan ids and changed files.
 "@
@@ -2879,17 +3052,12 @@ if ($StrictRoot) {
 Set-Location $script:ResolvedProjectRoot
 
 $script:WslCodexPath = Resolve-WslCodexPath
-$script:UseWslCodex = -not [string]::IsNullOrWhiteSpace($script:WslCodexPath)
-
-if ($script:UseWslCodex) {
-    $script:CodexExe = "wsl:{0}" -f $script:WslCodexPath
-} else {
-    $script:CodexExe = Resolve-CodexCommand
-    if (-not $script:CodexExe) {
-        throw "codex executable not found. Install/login Codex CLI first."
-    }
-    Ensure-CodexOnPath -CodexExePath $script:CodexExe
+$script:UseWslCodex = $false
+$script:CodexExe = Resolve-CodexCommand
+if (-not $script:CodexExe) {
+    throw "codex executable not found. Install/login Codex CLI first."
 }
+Ensure-CodexOnPath -CodexExePath $script:CodexExe
 
 $script:GitExe = Resolve-GitCommand
 if (-not $script:GitExe) {
@@ -3092,12 +3260,15 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
 
                         $signal = Get-ExecuteCodeSignal -PreviousCommitCount $phaseCommitBefore -PreviousCodeFileCount $phaseCodeFilesBefore
                         $codeEvidence = Get-PhaseExecutionCodeEvidence -StartHead $phaseHeadBefore -BeforeWorkingSet $phaseWorkingSetBefore
+                        $codeRequiredFindingRefs = @(Get-CodeRequiredFindingRefs -FindingRefs $findingRefsList)
+                        $codeRequiredFindingRefsText = Join-StringList -Values $codeRequiredFindingRefs -MaxItems 8
                         $changedFilesText = Join-StringList -Values @($codeEvidence.ChangedCodeFiles) -MaxItems 8
-                        $codedFindingsText = if ($codeEvidence.CodeGenerated) { $findingRefs } else { "none" }
-                        $uncodedFindingsText = if ($codeEvidence.CodeGenerated) { "none" } else { $findingRefs }
+                        $requiresCodeGeneration = ($codeRequiredFindingRefs.Count -gt 0)
+                        $codedFindingsText = if ($codeEvidence.CodeGenerated) { $findingRefs } elseif (-not $requiresCodeGeneration) { "evidence-only" } else { "none" }
+                        $uncodedFindingsText = if ($codeEvidence.CodeGenerated -or -not $requiresCodeGeneration) { "none" } else { $codeRequiredFindingRefsText }
                         $findingCodeEvidence = Get-FindingCodeEvidenceText -FindingRefs $findingRefsList -ChangedCodeFiles @($codeEvidence.ChangedCodeFiles)
 
-                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-finding-remediation-check" -Doing ("phase {0} remediation-check findings={1} coded_findings={2} uncoded_findings={3} code_files_changed={4} finding_code_evidence={5} new_commits={6} code_files_total={7} pass={8}" -f $phaseId, $findingRefs, $codedFindingsText, $uncodedFindingsText, $changedFilesText, $findingCodeEvidence, $signal.NewCommits, $signal.CodeFilesNow, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                        Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-finding-remediation-check" -Doing ("phase {0} remediation-check findings={1} required_code_findings={2} coded_findings={3} uncoded_findings={4} code_files_changed={5} finding_code_evidence={6} new_commits={7} code_files_total={8} pass={9}" -f $phaseId, $findingRefs, $codeRequiredFindingRefsText, $codedFindingsText, $uncodedFindingsText, $changedFilesText, $findingCodeEvidence, $signal.NewCommits, $signal.CodeFilesNow, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
 
                         $pendingNow = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
                         $phaseCompleted = ($pendingNow -notcontains $phaseId)
@@ -3106,14 +3277,15 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                         $splitFindingsMap = @()
 
                         $executeStalled = ($execExit -eq 124)
-                        $needsRework = ($executeStalled -or -not $codeEvidence.CodeGenerated)
+                        $needsRework = ($executeStalled -or ($requiresCodeGeneration -and -not $codeEvidence.CodeGenerated))
                         if ($needsRework) {
                             $stallReason = if ($executeStalled) { "no-log-growth-stall" } else { "no-coding-evidence" }
                             $stallCount = Increment-ExecuteStallCount -PhaseId $phaseId
                             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-stall-counter" -Doing ("phase {0} stall-count={1}/{2} reason={3} findings={4}" -f $phaseId, $stallCount, [Math]::Max(2, [int]$ExecuteStallSplitThreshold), $stallReason, $findingRefs) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
 
                             if ($stallCount -ge [Math]::Max(2, [int]$ExecuteStallSplitThreshold)) {
-                                $split = Split-PhaseIntoSubphases -PhaseId $phaseId -FindingRefs $findingRefsList -Parts ([Math]::Max(3, [int]$ExecuteStallSplitParts)) -Reason ("{0} x{1}" -f $stallReason, $stallCount)
+                                $splitRefs = if ($requiresCodeGeneration) { $codeRequiredFindingRefs } else { $findingRefsList }
+                                $split = Split-PhaseIntoSubphases -PhaseId $phaseId -FindingRefs $splitRefs -Parts ([Math]::Max(3, [int]$ExecuteStallSplitParts)) -Reason ("{0} x{1}" -f $stallReason, $stallCount)
                                 if ($split.Success) {
                                     $phaseSplit = $true
                                     $phaseCompleted = $false
@@ -3134,7 +3306,7 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                                 $reset = Reset-PhaseForResearchPlan -PhaseId $phaseId
                                 $phaseCompleted = $false
                                 $removedText = Join-StringList -Values @($reset.RemovedArtifacts) -MaxItems 8
-                                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reset-research-plan" -Doing ("phase {0} reset for rework: no coding evidence for findings={1}; removed_artifacts={2}; reopened={3}; requeue_path=research->plan->execute(same-cycle)" -f $phaseId, $findingRefs, $removedText, $reset.Reopened) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reset-research-plan" -Doing ("phase {0} reset for rework: no coding evidence for required_findings={1}; removed_artifacts={2}; reopened={3}; requeue_path=research->plan->execute(same-cycle)" -f $phaseId, $codeRequiredFindingRefsText, $removedText, $reset.Reopened) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
                             }
                         } else {
                             Clear-ExecuteStallCount -PhaseId $phaseId
