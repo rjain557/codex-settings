@@ -17,6 +17,12 @@ param(
     [int]$HeartbeatSeconds = 60,
     [int]$HeartbeatCheckSeconds = 30,
     [int]$LongProcessStallSeconds = 600,
+    [int]$ExecuteStallSplitThreshold = 2,
+    [int]$ExecuteStallSplitParts = 3,
+    [int]$ResearchEtaBaseSeconds = 180,
+    [int]$ResearchEtaPerFindingSeconds = 240,
+    [int]$PlanningEtaBaseSeconds = 240,
+    [int]$PlanningEtaPerFindingSeconds = 300,
     [int]$PreflightMaxSeconds = 180,
     [bool]$AutoRecoverOnStop = $true,
     [int]$AutoRecoverMaxRestarts = 40,
@@ -37,6 +43,8 @@ $script:LastReviewFindingKeys = @()
 $script:LastPhaseMapByKey = @{}
 $script:InstanceMutex = $null
 $script:InstanceMutexName = ""
+$script:ExecuteStallCountsPath = ""
+$script:ExecuteStallCounts = @{}
 
 if (-not $AllowRun) {
     Write-Host "Auto-dev execution blocked. Pass -AllowRun to explicitly permit running." -ForegroundColor Yellow
@@ -186,6 +194,12 @@ if ($OpenWindow) {
     HeartbeatSeconds = $HeartbeatSeconds
     HeartbeatCheckSeconds = $HeartbeatCheckSeconds
     LongProcessStallSeconds = $LongProcessStallSeconds
+    ExecuteStallSplitThreshold = $ExecuteStallSplitThreshold
+    ExecuteStallSplitParts = $ExecuteStallSplitParts
+    ResearchEtaBaseSeconds = $ResearchEtaBaseSeconds
+    ResearchEtaPerFindingSeconds = $ResearchEtaPerFindingSeconds
+    PlanningEtaBaseSeconds = $PlanningEtaBaseSeconds
+    PlanningEtaPerFindingSeconds = $PlanningEtaPerFindingSeconds
     PreflightMaxSeconds = $PreflightMaxSeconds
     AutoRecoverOnStop = $autoRecoverLiteral
     AutoRecoverMaxRestarts = $AutoRecoverMaxRestarts
@@ -1307,6 +1321,224 @@ function Get-PhaseFindingReferences {
     return @($refs.ToArray() | Sort-Object -Unique)
 }
 
+function Get-RoadmapPhaseBlock {
+    param(
+        [string]$RoadmapFile,
+        [int]$PhaseId
+    )
+
+    if (-not (Test-Path $RoadmapFile)) { return $null }
+    $lines = @(Get-Content -Path $RoadmapFile)
+    if ($lines.Count -eq 0) { return $null }
+
+    $start = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = [string]$lines[$i]
+        $match = [regex]::Match($line, '^- \[[ xX]\] \*\*Phase (\d+):', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if (-not $match.Success) { continue }
+
+        $candidate = 0
+        if (-not [int]::TryParse([string]$match.Groups[1].Value, [ref]$candidate)) { continue }
+        if ($candidate -ne $PhaseId) { continue }
+        $start = $i
+        break
+    }
+
+    if ($start -lt 0) { return $null }
+
+    $end = $lines.Count - 1
+    for ($j = $start + 1; $j -lt $lines.Count; $j++) {
+        $line = [string]$lines[$j]
+        if ($line -match '^- \[[ xX]\] \*\*Phase (\d+):') {
+            $end = $j - 1
+            break
+        }
+    }
+
+    return [PSCustomObject]@{
+        Lines = $lines
+        Start = $start
+        End   = $end
+    }
+}
+
+function Get-PhaseFindingReferencesFromRoadmap {
+    param(
+        [int]$PhaseId,
+        [string]$RoadmapFile = $script:ResolvedRoadmapPath
+    )
+
+    $block = Get-RoadmapPhaseBlock -RoadmapFile $RoadmapFile -PhaseId $PhaseId
+    if ($null -eq $block) { return @() }
+
+    $refs = New-Object System.Collections.Generic.List[string]
+    for ($i = $block.Start; $i -le $block.End; $i++) {
+        $line = [string]$block.Lines[$i]
+        if (-not ($line -match '^\s*-\s*Findings\s*:')) { continue }
+        foreach ($item in @(Get-FindingRefsFromText -Text $line)) {
+            if (-not $refs.Contains($item)) {
+                $refs.Add($item) | Out-Null
+            }
+        }
+    }
+
+    return @($refs.ToArray() | Sort-Object -Unique)
+}
+
+function Convert-SecondsToDurationText {
+    param([int]$Seconds)
+
+    $safe = [Math]::Max(0, [int]$Seconds)
+    $ts = [TimeSpan]::FromSeconds($safe)
+    if ($ts.TotalHours -ge 1) {
+        return ("{0}h{1:D2}m" -f [int]$ts.TotalHours, $ts.Minutes)
+    }
+
+    if ($ts.TotalMinutes -ge 1) {
+        return ("{0}m{1:D2}s" -f [int]$ts.TotalMinutes, $ts.Seconds)
+    }
+
+    return ("{0}s" -f [int]$ts.TotalSeconds)
+}
+
+function Get-PhaseStageEstimateSeconds {
+    param(
+        [int]$PhaseId,
+        [string]$Stage
+    )
+
+    $findingRefs = @(Get-PhaseFindingReferences -PhaseId $PhaseId)
+    if ($findingRefs.Count -eq 0) {
+        $findingRefs = @(Get-PhaseFindingReferencesFromRoadmap -PhaseId $PhaseId -RoadmapFile $script:ResolvedRoadmapPath)
+    }
+
+    $findingCount = [Math]::Max(1, $findingRefs.Count)
+    $stageSafe = if ([string]::IsNullOrWhiteSpace($Stage)) { "" } else { $Stage.Trim().ToLowerInvariant() }
+
+    if ($stageSafe -eq "planning") {
+        return [Math]::Max(60, ([int]$PlanningEtaBaseSeconds + ($findingCount * [int]$PlanningEtaPerFindingSeconds)))
+    }
+
+    return [Math]::Max(60, ([int]$ResearchEtaBaseSeconds + ($findingCount * [int]$ResearchEtaPerFindingSeconds)))
+}
+
+function Get-PhaseStageEstimateMap {
+    param(
+        [int[]]$PhaseIds,
+        [string]$Stage
+    )
+
+    $map = @{}
+    foreach ($phaseId in @($PhaseIds | Sort-Object -Unique)) {
+        $map[[string]$phaseId] = [int](Get-PhaseStageEstimateSeconds -PhaseId $phaseId -Stage $Stage)
+    }
+    return $map
+}
+
+function Get-PhaseStageEstimateSummary {
+    param(
+        [hashtable]$EstimateMap,
+        [int]$MaxItems = 12
+    )
+
+    if ($null -eq $EstimateMap -or $EstimateMap.Count -eq 0) {
+        return [PSCustomObject]@{
+            TotalSeconds = 0
+            TotalText    = "0s"
+            PerPhaseText = "none"
+        }
+    }
+
+    $keys = @($EstimateMap.Keys | ForEach-Object { [int]$_ } | Sort-Object)
+    $total = 0
+    $entries = New-Object System.Collections.Generic.List[string]
+    foreach ($phaseId in $keys) {
+        $sec = [Math]::Max(0, [int]$EstimateMap[[string]$phaseId])
+        $total += $sec
+        if ($entries.Count -lt $MaxItems) {
+            $entries.Add(("{0}:{1}" -f $phaseId, (Convert-SecondsToDurationText -Seconds $sec))) | Out-Null
+        }
+    }
+    if ($keys.Count -gt $MaxItems) {
+        $entries.Add(("...(+{0})" -f ($keys.Count - $MaxItems))) | Out-Null
+    }
+
+    return [PSCustomObject]@{
+        TotalSeconds = $total
+        TotalText    = Convert-SecondsToDurationText -Seconds $total
+        PerPhaseText = if ($entries.Count -gt 0) { [string]::Join(",", @($entries.ToArray())) } else { "none" }
+    }
+}
+
+function Load-ExecuteStallCounts {
+    $script:ExecuteStallCounts = @{}
+    if ([string]::IsNullOrWhiteSpace($script:ExecuteStallCountsPath)) { return }
+    if (-not (Test-Path $script:ExecuteStallCountsPath)) { return }
+
+    $raw = ""
+    try { $raw = Get-Content -Raw -Path $script:ExecuteStallCountsPath -ErrorAction Stop } catch { $raw = "" }
+    if ([string]::IsNullOrWhiteSpace($raw)) { return }
+
+    try {
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+        if ($null -eq $obj) { return }
+        foreach ($p in $obj.PSObject.Properties) {
+            $key = [string]$p.Name
+            if ([string]::IsNullOrWhiteSpace($key)) { continue }
+            $val = 0
+            if ([int]::TryParse([string]$p.Value, [ref]$val)) {
+                $script:ExecuteStallCounts[$key] = [Math]::Max(0, $val)
+            }
+        }
+    } catch {
+        $script:ExecuteStallCounts = @{}
+    }
+}
+
+function Save-ExecuteStallCounts {
+    if ([string]::IsNullOrWhiteSpace($script:ExecuteStallCountsPath)) { return }
+    if ($DryRun) { return }
+
+    $obj = [ordered]@{}
+    foreach ($key in @($script:ExecuteStallCounts.Keys | Sort-Object)) {
+        $obj[[string]$key] = [Math]::Max(0, [int]$script:ExecuteStallCounts[$key])
+    }
+
+    $json = $obj | ConvertTo-Json -Depth 4
+    Set-Content -Path $script:ExecuteStallCountsPath -Value $json -Encoding UTF8
+}
+
+function Get-ExecuteStallCount {
+    param([int]$PhaseId)
+
+    $key = [string]$PhaseId
+    if ($script:ExecuteStallCounts.ContainsKey($key)) {
+        return [Math]::Max(0, [int]$script:ExecuteStallCounts[$key])
+    }
+    return 0
+}
+
+function Increment-ExecuteStallCount {
+    param([int]$PhaseId)
+
+    $key = [string]$PhaseId
+    $current = Get-ExecuteStallCount -PhaseId $PhaseId
+    $next = [int]$current + 1
+    $script:ExecuteStallCounts[$key] = $next
+    Save-ExecuteStallCounts
+    return $next
+}
+
+function Clear-ExecuteStallCount {
+    param([int]$PhaseId)
+
+    $key = [string]$PhaseId
+    if ($script:ExecuteStallCounts.ContainsKey($key)) {
+        $null = $script:ExecuteStallCounts.Remove($key)
+        Save-ExecuteStallCounts
+    }
+}
+
 function Write-PhaseFindingMapProgress {
     param(
         [string]$StatusPath,
@@ -1454,7 +1686,10 @@ function Get-FindingCodeEvidenceText {
 }
 
 function Reset-PhaseForResearchPlan {
-    param([int]$PhaseId)
+    param(
+        [int]$PhaseId,
+        [switch]$SkipReopen
+    )
 
     $removed = New-Object System.Collections.Generic.List[string]
     $dir = Get-PhaseDirectoryPath -PhaseId $PhaseId
@@ -1471,12 +1706,161 @@ function Reset-PhaseForResearchPlan {
         }
     }
 
-    $reopened = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds @($PhaseId)
+    $reopened = $false
+    if (-not $SkipReopen) {
+        $reopened = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds @($PhaseId)
+    }
 
     return [PSCustomObject]@{
         RemovedArtifacts = @($removed.ToArray() | Sort-Object -Unique)
         RemovedCount     = @($removed.ToArray() | Sort-Object -Unique).Count
         Reopened         = [bool]$reopened
+    }
+}
+
+function Split-PhaseIntoSubphases {
+    param(
+        [int]$PhaseId,
+        [string[]]$FindingRefs,
+        [int]$Parts = 3,
+        [string]$Reason = "repeated execute stall"
+    )
+
+    $partsSafe = [Math]::Max(2, [int]$Parts)
+    $block = Get-RoadmapPhaseBlock -RoadmapFile $script:ResolvedRoadmapPath -PhaseId $PhaseId
+    if ($null -eq $block) {
+        return [PSCustomObject]@{
+            Success = $false
+            Message = "phase block not found in roadmap"
+            NewPhaseIds = @()
+            FindingsMap = @()
+            RemovedArtifacts = @()
+        }
+    }
+
+    $lines = @($block.Lines)
+    $heading = [string]$lines[$block.Start]
+    $titleText = [regex]::Replace($heading, '^- \[[ xX]\] \*\*Phase \d+:\s*', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $titleText = [regex]::Replace($titleText, '\*\*$', '')
+    $titleText = $titleText.Trim()
+
+    $estimateHours = $null
+    $estimateMatch = [regex]::Match($titleText, '\(~\s*([0-9]+(?:\.[0-9]+)?)h\)\s*$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if ($estimateMatch.Success) {
+        $tmp = 0.0
+        if ([double]::TryParse([string]$estimateMatch.Groups[1].Value, [ref]$tmp)) {
+            $estimateHours = $tmp
+        }
+    }
+    $baseTitle = [regex]::Replace($titleText, '\s*\(~\s*[0-9]+(?:\.[0-9]+)?h\)\s*$', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase).Trim()
+    if ([string]::IsNullOrWhiteSpace($baseTitle)) {
+        $baseTitle = "Execute Stall Recovery"
+    }
+
+    $dependsOn = "None"
+    for ($i = $block.Start; $i -le $block.End; $i++) {
+        $line = [string]$lines[$i]
+        $dependsMatch = [regex]::Match($line, '^\s*-\s*Depends on:\s*(.+)$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+        if ($dependsMatch.Success) {
+            $dependsOn = [string]$dependsMatch.Groups[1].Value.Trim()
+            if ([string]::IsNullOrWhiteSpace($dependsOn)) { $dependsOn = "None" }
+            break
+        }
+    }
+
+    $normalizedFindings = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($FindingRefs)) {
+        $text = [string]$item
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        $text = $text.Trim().ToUpperInvariant()
+        if (-not $normalizedFindings.Contains($text)) {
+            $normalizedFindings.Add($text) | Out-Null
+        }
+    }
+
+    if ($normalizedFindings.Count -eq 0) {
+        foreach ($item in @(Get-PhaseFindingReferencesFromRoadmap -PhaseId $PhaseId -RoadmapFile $script:ResolvedRoadmapPath)) {
+            if (-not $normalizedFindings.Contains($item)) {
+                $normalizedFindings.Add($item) | Out-Null
+            }
+        }
+    }
+
+    if ($normalizedFindings.Count -eq 0) {
+        $normalizedFindings.Add(("PHASE-{0}-STALL-RECOVERY" -f $PhaseId)) | Out-Null
+    }
+
+    $allPhases = @(Get-AllPhases -RoadmapFile $script:ResolvedRoadmapPath)
+    $startPhase = if ($allPhases.Count -gt 0) { ([int]($allPhases | Measure-Object -Maximum).Maximum) + 1 } else { 1 }
+    $newPhaseIds = @()
+    for ($i = 0; $i -lt $partsSafe; $i++) {
+        $newPhaseIds += ($startPhase + $i)
+    }
+
+    $findingBuckets = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt $partsSafe; $i++) {
+        $findingBuckets.Add((New-Object System.Collections.Generic.List[string])) | Out-Null
+    }
+    for ($i = 0; $i -lt $normalizedFindings.Count; $i++) {
+        $bucket = $findingBuckets[$i % $partsSafe]
+        $bucket.Add([string]$normalizedFindings[$i]) | Out-Null
+    }
+    for ($i = 0; $i -lt $partsSafe; $i++) {
+        $bucket = $findingBuckets[$i]
+        if ($bucket.Count -eq 0) {
+            $bucket.Add([string]$normalizedFindings[$normalizedFindings.Count - 1]) | Out-Null
+        }
+    }
+
+    $baseHours = if ($null -ne $estimateHours) { [double]$estimateHours } else { [double]([Math]::Max(3, $normalizedFindings.Count * 2)) }
+    $splitHours = [Math]::Max(1, [int][Math]::Ceiling($baseHours / [double]$partsSafe))
+
+    $newPhaseLines = New-Object System.Collections.Generic.List[string]
+    $newPhaseLines.Add(("  - Auto-dev split recovery: replaced by phases {0} ({1})." -f (Join-IntList -Values $newPhaseIds -MaxItems 12), $Reason)) | Out-Null
+    $newPhaseLines.Add("") | Out-Null
+
+    $findingsMapText = New-Object System.Collections.Generic.List[string]
+    for ($idx = 0; $idx -lt $newPhaseIds.Count; $idx++) {
+        $newId = [int]$newPhaseIds[$idx]
+        $part = $idx + 1
+        $bucketText = Join-StringList -Values @($findingBuckets[$idx].ToArray()) -MaxItems 20
+        $newPhaseLines.Add(("- [ ] **Phase {0}: {1} (Split {2}/{3} from Phase {4}) (~{5}h)" -f $newId, $baseTitle, $part, $partsSafe, $PhaseId, $splitHours)) | Out-Null
+        $newPhaseLines.Add(("  - Auto-generated after repeated execute stalls on phase {0}." -f $PhaseId)) | Out-Null
+        $newPhaseLines.Add(("  - Findings: {0}" -f $bucketText)) | Out-Null
+        $newPhaseLines.Add(("  - Depends on: {0}" -f $dependsOn)) | Out-Null
+        $newPhaseLines.Add("") | Out-Null
+        $findingsMapText.Add(("{0}:{1}" -f $newId, $bucketText)) | Out-Null
+    }
+
+    $lines[$block.Start] = [regex]::Replace($lines[$block.Start], '^- \[[ xX]\]', '- [x]', 1)
+    $insertAt = $block.End + 1
+    $updated = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $updated.Add([string]$lines[$i]) | Out-Null
+        if ($i -eq $insertAt - 1) {
+            foreach ($row in $newPhaseLines) {
+                $updated.Add([string]$row) | Out-Null
+            }
+        }
+    }
+    if ($insertAt -ge $lines.Count) {
+        foreach ($row in $newPhaseLines) {
+            $updated.Add([string]$row) | Out-Null
+        }
+    }
+
+    if (-not $DryRun) {
+        Set-Content -Path $script:ResolvedRoadmapPath -Value @($updated.ToArray()) -Encoding UTF8
+    }
+
+    $reset = Reset-PhaseForResearchPlan -PhaseId $PhaseId -SkipReopen
+
+    return [PSCustomObject]@{
+        Success = $true
+        Message = "phase split complete"
+        NewPhaseIds = $newPhaseIds
+        FindingsMap = @($findingsMapText.ToArray())
+        RemovedArtifacts = @($reset.RemovedArtifacts)
     }
 }
 
@@ -2207,7 +2591,8 @@ function Invoke-GlobalSkillParallelPhaseBatch {
         [int]$Pass,
         [int[]]$PhaseIds,
         [string]$CommandLineTemplate,
-        [string]$PurposeTemplate
+        [string]$PurposeTemplate,
+        [hashtable]$PhaseEstimatesSecondsById = @{}
     )
 
     $targets = @($PhaseIds | Sort-Object -Unique)
@@ -2260,6 +2645,8 @@ function Invoke-GlobalSkillParallelPhaseBatch {
             Process   = $proc
             LogFile   = $logFile
             ErrFile   = $errFile
+            StartedAt = Get-Date
+            EstimatedSeconds = if ($PhaseEstimatesSecondsById.ContainsKey([string]$phaseId)) { [Math]::Max(0, [int]$PhaseEstimatesSecondsById[[string]$phaseId]) } else { 0 }
             Completed = $false
             ExitCode  = $null
         }) | Out-Null
@@ -2315,7 +2702,27 @@ function Invoke-GlobalSkillParallelPhaseBatch {
         if ($heartbeatCheckDue) {
             $runningList = Join-IntList -Values @($runningPhases.ToArray()) -MaxItems 20
             $runningPhase = if ($runningPhases.Count -gt 0) { [string]$runningPhases[0] } else { "-" }
-            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-parallel-heartbeat-check" -f $Stage) -Doing ("parallel {0} heartbeat-check running phases={1} completed={2}/{3} pass={4} interval={5}s log_bytes={6} log_growth={7} idle_s={8}/{9}" -f $stageSafe, $runningList, $completedCount, $totalCount, $Pass, $heartbeatCheckIntervalSeconds, $batchBytesNow, $batchGrowthBytes, $batchIdleSeconds, $stallThresholdSeconds) -Phase $runningPhase -IsRunning $true -LogName "-"
+            $etaEntries = New-Object System.Collections.Generic.List[string]
+            $etaOverrunCount = 0
+            foreach ($runningPhaseId in $runningPhases) {
+                $workerEta = @($workers | Where-Object { $_.PhaseId -eq $runningPhaseId } | Select-Object -First 1)
+                if ($workerEta.Count -eq 0) { continue }
+                $workerInfo = $workerEta[0]
+                $etaSeconds = [Math]::Max(0, [int]$workerInfo.EstimatedSeconds)
+                if ($etaSeconds -le 0) { continue }
+
+                $elapsedSeconds = [int][Math]::Round(((Get-Date) - $workerInfo.StartedAt).TotalSeconds)
+                if ($elapsedSeconds -gt $etaSeconds) { $etaOverrunCount++ }
+                if ($etaEntries.Count -lt 8) {
+                    $etaEntries.Add(("{0}:{1}/{2}" -f $runningPhaseId, (Convert-SecondsToDurationText -Seconds $elapsedSeconds), (Convert-SecondsToDurationText -Seconds $etaSeconds))) | Out-Null
+                }
+            }
+            if ($runningPhases.Count -gt 8) {
+                $etaEntries.Add(("...(+{0})" -f ($runningPhases.Count - 8))) | Out-Null
+            }
+            $etaText = if ($etaEntries.Count -gt 0) { [string]::Join(",", @($etaEntries.ToArray())) } else { "none" }
+
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $Cycle -Stage ("{0}-parallel-heartbeat-check" -f $Stage) -Doing ("parallel {0} heartbeat-check running phases={1} completed={2}/{3} pass={4} interval={5}s log_bytes={6} log_growth={7} idle_s={8}/{9} eta_running={10} eta_overrun={11}/{12}" -f $stageSafe, $runningList, $completedCount, $totalCount, $Pass, $heartbeatCheckIntervalSeconds, $batchBytesNow, $batchGrowthBytes, $batchIdleSeconds, $stallThresholdSeconds, $etaText, $etaOverrunCount, $runningPhases.Count) -Phase $runningPhase -IsRunning $true -LogName "-"
             $lastHeartbeatCheck = Get-Date
 
             if ($batchIdleSeconds -ge $stallThresholdSeconds -and $runningPhases.Count -gt 0) {
@@ -2453,6 +2860,9 @@ if (-not (Test-Path $statusDir) -and -not $DryRun) {
     New-Item -ItemType Directory -Path $statusDir -Force | Out-Null
 }
 
+$script:ExecuteStallCountsPath = Join-Path $script:ResolvedLogDir "execute-stall-counts.json"
+Load-ExecuteStallCounts
+
 $script:ResolvedSummaryPaths = @()
 if (-not $PSBoundParameters.ContainsKey("SummaryPaths")) {
     $SummaryPaths = @($script:ReviewSummarySourceRelative)
@@ -2482,6 +2892,10 @@ Write-Host ("Auto-dev max cycles:   {0}" -f $AutoDevMaxCycles) -ForegroundColor 
 Write-Host ("Heartbeat (seconds):   {0}" -f $HeartbeatSeconds) -ForegroundColor White
 Write-Host ("Heartbeat check (sec): {0}" -f $HeartbeatCheckSeconds) -ForegroundColor White
 Write-Host ("Stall threshold (sec): {0}" -f $LongProcessStallSeconds) -ForegroundColor White
+Write-Host ("Stall split threshold: {0}" -f $ExecuteStallSplitThreshold) -ForegroundColor White
+Write-Host ("Stall split parts:     {0}" -f $ExecuteStallSplitParts) -ForegroundColor White
+Write-Host ("Research ETA model:    {0}s + {1}s/finding" -f $ResearchEtaBaseSeconds, $ResearchEtaPerFindingSeconds) -ForegroundColor White
+Write-Host ("Planning ETA model:    {0}s + {1}s/finding" -f $PlanningEtaBaseSeconds, $PlanningEtaPerFindingSeconds) -ForegroundColor White
 Write-Host ("Preflight max (sec):   {0}" -f $PreflightMaxSeconds) -ForegroundColor White
 Write-Host ("Auto recover on stop:  {0}" -f $AutoRecoverOnStop) -ForegroundColor White
 Write-Host ("Max auto restarts:     {0}" -f $AutoRecoverMaxRestarts) -ForegroundColor White
@@ -2536,9 +2950,11 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
 
                 $researchTargets = @(Get-PhasesNeedingResearch -PhaseIds $pendingForPass)
                 if ($researchTargets.Count -gt 0) {
-                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-enter" -Doing ("entering research phases={0} pass={1}" -f (Join-IntList -Values $researchTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $true -LogName "-"
+                    $researchEstimateMap = Get-PhaseStageEstimateMap -PhaseIds $researchTargets -Stage "research"
+                    $researchEstimateSummary = Get-PhaseStageEstimateSummary -EstimateMap $researchEstimateMap -MaxItems 12
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research-enter" -Doing ("entering research phases={0} pass={1} eta_total={2} eta_by_phase={3}" -f (Join-IntList -Values $researchTargets -MaxItems 12), $phasePass, $researchEstimateSummary.TotalText, $researchEstimateSummary.PerPhaseText) -Phase $phaseText -IsRunning $true -LogName "-"
                     Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "research" -MapType "research-target" -PhaseIds $researchTargets -LogName "-"
-                    $researchBatch = Invoke-GlobalSkillParallelPhaseBatch -Stage "research" -Cycle $cycle -Pass $phasePass -PhaseIds $researchTargets -CommandLineTemplate "`$gsd-batch-research {0}" -PurposeTemplate "research phase {0}"
+                    $researchBatch = Invoke-GlobalSkillParallelPhaseBatch -Stage "research" -Cycle $cycle -Pass $phasePass -PhaseIds $researchTargets -CommandLineTemplate "`$gsd-batch-research {0}" -PurposeTemplate "research phase {0}" -PhaseEstimatesSecondsById $researchEstimateMap
                     if (-not [string]::IsNullOrWhiteSpace([string]$researchBatch.LastLogFile)) {
                         $lastAutoDevLog = [string]$researchBatch.LastLogFile
                     }
@@ -2566,9 +2982,11 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                 $pendingBeforePlan = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
                 $planTargets = @(Get-PhasesNeedingPlan -PhaseIds $pendingBeforePlan)
                 if ($planTargets.Count -gt 0) {
-                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-enter" -Doing ("entering planning phases={0} pass={1}" -f (Join-IntList -Values $planTargets -MaxItems 12), $phasePass) -Phase $phaseText -IsRunning $true -LogName "-"
+                    $planningEstimateMap = Get-PhaseStageEstimateMap -PhaseIds $planTargets -Stage "planning"
+                    $planningEstimateSummary = Get-PhaseStageEstimateSummary -EstimateMap $planningEstimateMap -MaxItems 12
+                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning-enter" -Doing ("entering planning phases={0} pass={1} eta_total={2} eta_by_phase={3}" -f (Join-IntList -Values $planTargets -MaxItems 12), $phasePass, $planningEstimateSummary.TotalText, $planningEstimateSummary.PerPhaseText) -Phase $phaseText -IsRunning $true -LogName "-"
                     Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "planning" -MapType "planning-target" -PhaseIds $planTargets -LogName "-"
-                    $planBatch = Invoke-GlobalSkillParallelPhaseBatch -Stage "planning" -Cycle $cycle -Pass $phasePass -PhaseIds $planTargets -CommandLineTemplate "`$gsd-batch-plan {0}" -PurposeTemplate "plan phase {0}"
+                    $planBatch = Invoke-GlobalSkillParallelPhaseBatch -Stage "planning" -Cycle $cycle -Pass $phasePass -PhaseIds $planTargets -CommandLineTemplate "`$gsd-batch-plan {0}" -PurposeTemplate "plan phase {0}" -PhaseEstimatesSecondsById $planningEstimateMap
                     if (-not [string]::IsNullOrWhiteSpace([string]$planBatch.LastLogFile)) {
                         $lastAutoDevLog = [string]$planBatch.LastLogFile
                     }
@@ -2609,6 +3027,9 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
 
                     foreach ($phaseId in $executeTargets) {
                         $findingRefsList = @(Get-PhaseFindingReferences -PhaseId $phaseId)
+                        if ($findingRefsList.Count -eq 0) {
+                            $findingRefsList = @(Get-PhaseFindingReferencesFromRoadmap -PhaseId $phaseId -RoadmapFile $script:ResolvedRoadmapPath)
+                        }
                         $findingRefs = Join-StringList -Values $findingRefsList -MaxItems 8
                         $phaseCommitBefore = Get-CommitDeltaSinceStart
                         $phaseCodeFilesBefore = Get-CodeFileWorkingSetCount
@@ -2631,15 +3052,48 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
 
                         $pendingNow = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
                         $phaseCompleted = ($pendingNow -notcontains $phaseId)
+                        $phaseSplit = $false
+                        $splitPhaseIds = @()
+                        $splitFindingsMap = @()
 
-                        if (-not $codeEvidence.CodeGenerated) {
-                            $reset = Reset-PhaseForResearchPlan -PhaseId $phaseId
-                            $phaseCompleted = $false
-                            $removedText = Join-StringList -Values @($reset.RemovedArtifacts) -MaxItems 8
-                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reset-research-plan" -Doing ("phase {0} reset for rework: no coding evidence for findings={1}; removed_artifacts={2}; reopened={3}; requeue_path=research->plan->execute(same-cycle)" -f $phaseId, $findingRefs, $removedText, $reset.Reopened) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                        $executeStalled = ($execExit -eq 124)
+                        $needsRework = ($executeStalled -or -not $codeEvidence.CodeGenerated)
+                        if ($needsRework) {
+                            $stallReason = if ($executeStalled) { "no-log-growth-stall" } else { "no-coding-evidence" }
+                            $stallCount = Increment-ExecuteStallCount -PhaseId $phaseId
+                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-stall-counter" -Doing ("phase {0} stall-count={1}/{2} reason={3} findings={4}" -f $phaseId, $stallCount, [Math]::Max(2, [int]$ExecuteStallSplitThreshold), $stallReason, $findingRefs) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+
+                            if ($stallCount -ge [Math]::Max(2, [int]$ExecuteStallSplitThreshold)) {
+                                $split = Split-PhaseIntoSubphases -PhaseId $phaseId -FindingRefs $findingRefsList -Parts ([Math]::Max(3, [int]$ExecuteStallSplitParts)) -Reason ("{0} x{1}" -f $stallReason, $stallCount)
+                                if ($split.Success) {
+                                    $phaseSplit = $true
+                                    $phaseCompleted = $false
+                                    $splitPhaseIds = @($split.NewPhaseIds | Sort-Object -Unique)
+                                    $splitFindingsMap = @($split.FindingsMap)
+                                    $splitIdsText = Join-IntList -Values $splitPhaseIds -MaxItems 12
+                                    $splitMapText = Join-StringList -Values $splitFindingsMap -MaxItems 12
+                                    $removedText = Join-StringList -Values @($split.RemovedArtifacts) -MaxItems 8
+                                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-split-phase" -Doing ("phase {0} split after repeated stalls into phases={1}; findings_map={2}; removed_artifacts={3}; requeue_path=research->plan->execute(same-cycle)" -f $phaseId, $splitIdsText, $splitMapText, $removedText) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                                    Clear-ExecuteStallCount -PhaseId $phaseId
+                                } else {
+                                    $reset = Reset-PhaseForResearchPlan -PhaseId $phaseId
+                                    $phaseCompleted = $false
+                                    $removedText = Join-StringList -Values @($reset.RemovedArtifacts) -MaxItems 8
+                                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reset-research-plan" -Doing ("phase {0} reset for rework: split failed ({1}); removed_artifacts={2}; reopened={3}; requeue_path=research->plan->execute(same-cycle)" -f $phaseId, $split.Message, $removedText, $reset.Reopened) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                                }
+                            } else {
+                                $reset = Reset-PhaseForResearchPlan -PhaseId $phaseId
+                                $phaseCompleted = $false
+                                $removedText = Join-StringList -Values @($reset.RemovedArtifacts) -MaxItems 8
+                                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reset-research-plan" -Doing ("phase {0} reset for rework: no coding evidence for findings={1}; removed_artifacts={2}; reopened={3}; requeue_path=research->plan->execute(same-cycle)" -f $phaseId, $findingRefs, $removedText, $reset.Reopened) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                            }
+                        } else {
+                            Clear-ExecuteStallCount -PhaseId $phaseId
                         }
 
-                        if ($phaseCompleted) {
+                        if ($phaseSplit) {
+                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} split and replaced; new_phases={1}; code_generated={2} findings={3} pass={4}" -f $phaseId, (Join-IntList -Values $splitPhaseIds -MaxItems 12), $(if ($codeEvidence.CodeGenerated) { "yes" } else { "no" }), $findingRefs, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                        } elseif ($phaseCompleted) {
                             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute complete; marking phase complete code_generated=yes new_commits={1} code_files={2} code_files_changed={3} findings={4} finding_code_evidence={5} pass={6}" -f $phaseId, $signal.NewCommits, $signal.CodeFilesNow, $changedFilesText, $findingRefs, $findingCodeEvidence, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
                             Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds @($phaseId) -LogName (Split-Path -Leaf $execLog) -Force
                         } else {
