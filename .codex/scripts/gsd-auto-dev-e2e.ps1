@@ -772,6 +772,23 @@ function Get-CompletedPhases {
     return @($phases | Sort-Object -Unique)
 }
 
+function Get-CompletedPhasesMissingSummary {
+    param([string]$RoadmapFile)
+
+    $completed = @(Get-CompletedPhases -RoadmapFile $RoadmapFile)
+    if ($completed.Count -eq 0) { return @() }
+
+    $missing = New-Object System.Collections.Generic.List[int]
+    foreach ($phaseId in $completed) {
+        $summaryFiles = @(Get-PhaseSummaryFiles -PhaseId ([int]$phaseId))
+        if ($summaryFiles.Count -eq 0) {
+            $missing.Add([int]$phaseId) | Out-Null
+        }
+    }
+
+    return @($missing.ToArray() | Sort-Object -Unique)
+}
+
 function Get-CodeFingerprint {
     $statusRes = Invoke-GitCapture -GitArgs @("status", "--porcelain") -AllowFail
     if ($statusRes.ExitCode -ne 0 -or @($statusRes.Output).Count -eq 0) { return @() }
@@ -1518,6 +1535,175 @@ function Get-RoadmapPhaseBlock {
         Lines = $lines
         Start = $start
         End   = $end
+    }
+}
+
+function Get-PhaseTitleFromRoadmap {
+    param(
+        [int]$PhaseId,
+        [string]$RoadmapFile = $script:ResolvedRoadmapPath
+    )
+
+    $block = Get-RoadmapPhaseBlock -RoadmapFile $RoadmapFile -PhaseId $PhaseId
+    if ($null -eq $block) { return ("Phase-{0}" -f $PhaseId) }
+
+    $heading = [string]$block.Lines[$block.Start]
+    $titleText = [regex]::Replace($heading, '^\s*-\s*\[[ xX]\]\s*(?:\*\*)?Phase \d+:\s*', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $titleText = [regex]::Replace($titleText, '\*\*$', '')
+    $titleText = [regex]::Replace($titleText, '\s*\(~\s*[0-9]+(?:\.[0-9]+)?h\)\s*$', '', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    $titleText = $titleText.Trim()
+
+    if ([string]::IsNullOrWhiteSpace($titleText)) {
+        return ("Phase-{0}" -f $PhaseId)
+    }
+
+    return $titleText
+}
+
+function Convert-ToPhaseSlug {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return "phase" }
+
+    $slug = $Text.Trim().ToLowerInvariant()
+    $slug = [regex]::Replace($slug, '[^a-z0-9]+', '-')
+    $slug = [regex]::Replace($slug, '-{2,}', '-')
+    $slug = $slug.Trim('-')
+
+    if ([string]::IsNullOrWhiteSpace($slug)) { return "phase" }
+    return $slug
+}
+
+function Get-OrCreatePhaseDirectoryPath {
+    param(
+        [int]$PhaseId,
+        [switch]$CreateIfMissing
+    )
+
+    $existing = Get-PhaseDirectoryPath -PhaseId $PhaseId
+    if (-not [string]::IsNullOrWhiteSpace($existing) -and (Test-Path $existing)) {
+        return $existing
+    }
+
+    if (-not $CreateIfMissing) { return $null }
+
+    $phaseRoot = Join-Path $script:ResolvedProjectRoot ".planning\phases"
+    if (-not (Test-Path $phaseRoot)) {
+        if ($DryRun) {
+            return (Join-Path $phaseRoot ("{0}-{1}" -f $PhaseId, "phase"))
+        }
+        New-Item -ItemType Directory -Path $phaseRoot -Force | Out-Null
+    }
+
+    $title = Get-PhaseTitleFromRoadmap -PhaseId $PhaseId -RoadmapFile $script:ResolvedRoadmapPath
+    $slug = Convert-ToPhaseSlug -Text $title
+    $dir = Join-Path $phaseRoot ("{0}-{1}" -f $PhaseId, $slug)
+
+    if (-not (Test-Path $dir)) {
+        if (-not $DryRun) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+    }
+
+    return $dir
+}
+
+function Get-PhaseSummaryFiles {
+    param([int]$PhaseId)
+
+    $dir = Get-PhaseDirectoryPath -PhaseId $PhaseId
+    if ([string]::IsNullOrWhiteSpace($dir) -or -not (Test-Path $dir)) { return @() }
+
+    return @(Get-ChildItem -Path $dir -File -Filter "*-SUMMARY.md" -ErrorAction SilentlyContinue | Sort-Object Name)
+}
+
+function Ensure-PhaseSummaryEvidence {
+    param(
+        [int]$PhaseId,
+        [string]$Reason = "auto-dev summary backfill",
+        [string]$Stage = "auto-close",
+        [int]$Cycle = 0,
+        [string[]]$FindingRefs = @(),
+        [string]$SourcePhaseIds = "none",
+        [switch]$ForceCreate
+    )
+
+    $existing = @(Get-PhaseSummaryFiles -PhaseId $PhaseId)
+    if ($existing.Count -gt 0 -and -not $ForceCreate) {
+        return [PSCustomObject]@{
+            Ok      = $true
+            Created = $false
+            Path    = $existing[0].FullName
+            Message = "summary already exists"
+        }
+    }
+
+    $dir = Get-OrCreatePhaseDirectoryPath -PhaseId $PhaseId -CreateIfMissing
+    if ([string]::IsNullOrWhiteSpace($dir)) {
+        return [PSCustomObject]@{
+            Ok      = $false
+            Created = $false
+            Path    = ""
+            Message = "phase directory unavailable"
+        }
+    }
+
+    $summaryPath = Join-Path $dir ("{0}-01-SUMMARY.md" -f $PhaseId)
+    if ((Test-Path $summaryPath) -and -not $ForceCreate) {
+        return [PSCustomObject]@{
+            Ok      = $true
+            Created = $false
+            Path    = $summaryPath
+            Message = "summary already exists"
+        }
+    }
+
+    if ($DryRun) {
+        return [PSCustomObject]@{
+            Ok      = $true
+            Created = $true
+            Path    = $summaryPath
+            Message = "dry-run summary backfill simulated"
+        }
+    }
+
+    $title = Get-PhaseTitleFromRoadmap -PhaseId $PhaseId -RoadmapFile $script:ResolvedRoadmapPath
+    $findingText = Join-StringList -Values @($FindingRefs) -MaxItems 20
+    $utcNow = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $content = @(
+        ("# Phase {0} Summary" -f $PhaseId),
+        "",
+        ("- Phase: {0}" -f $PhaseId),
+        ("- Title: {0}" -f $title),
+        ("- Completed UTC: {0}" -f $utcNow),
+        ("- Stage: {0}" -f $Stage),
+        ("- Cycle: {0}" -f $Cycle),
+        ("- Findings: {0}" -f $findingText),
+        ("- Source phases: {0}" -f $SourcePhaseIds),
+        ("- Reason: {0}" -f $Reason),
+        "- Evidence mode: summary-backfill",
+        "",
+        "## Outcome",
+        "",
+        "- Phase completion evidence backfilled by auto-dev integrity guard.",
+        "- This summary records remediation context to keep roadmap/state evidence deterministic."
+    )
+
+    try {
+        Set-Content -Path $summaryPath -Value $content -Encoding UTF8
+        return [PSCustomObject]@{
+            Ok      = $true
+            Created = $true
+            Path    = $summaryPath
+            Message = "summary backfill created"
+        }
+    } catch {
+        return [PSCustomObject]@{
+            Ok      = $false
+            Created = $false
+            Path    = $summaryPath
+            Message = ("summary backfill failed: {0}" -f $_.Exception.Message)
+        }
     }
 }
 
@@ -3407,6 +3593,23 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
         $stamp = (Get-Date).ToString("yyyyMMdd-HHmmss")
         Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "cycle-start" -Doing ("starting cycle {0}" -f $cycle) -Phase $phaseText -IsRunning $false -LogName "-"
 
+        $completedMissingSummary = @(Get-CompletedPhasesMissingSummary -RoadmapFile $script:ResolvedRoadmapPath)
+        if ($completedMissingSummary.Count -gt 0) {
+            $backfilledRows = New-Object System.Collections.Generic.List[string]
+            $failedRows = New-Object System.Collections.Generic.List[string]
+            foreach ($completedPhaseId in $completedMissingSummary) {
+                $phaseFindings = @(Get-PhaseFindingReferencesFromRoadmap -PhaseId ([int]$completedPhaseId) -RoadmapFile $script:ResolvedRoadmapPath)
+                $summary = Ensure-PhaseSummaryEvidence -PhaseId ([int]$completedPhaseId) -Reason "completed phase missing summary evidence" -Stage "cycle-integrity-summary-backfill" -Cycle $cycle -FindingRefs $phaseFindings
+                if ($summary.Ok) {
+                    $backfilledRows.Add(("{0}:{1}" -f $completedPhaseId, (Split-Path -Leaf $summary.Path))) | Out-Null
+                } else {
+                    $failedRows.Add(("{0}:{1}" -f $completedPhaseId, $summary.Message)) | Out-Null
+                }
+            }
+
+            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "cycle-summary-backfill-completed" -Doing ("completed phases missing summary backfilled={0} failed={1}" -f (Join-StringList -Values @($backfilledRows.ToArray()) -MaxItems 12), (Join-StringList -Values @($failedRows.ToArray()) -MaxItems 12)) -Phase $phaseText -IsRunning $false -LogName "-"
+        }
+
         $cycleAbort = $false
         if ($pendingBefore.Count -gt 0) {
             $phasePass = 0
@@ -3431,11 +3634,40 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                         $autoCloseIds = @($autoCloseRows | ForEach-Object { [int]$_.PhaseId } | Sort-Object -Unique)
                         $closed = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds $autoCloseIds -Complete
                         if ($closed) {
-                            $autoCloseText = Join-IntList -Values $autoCloseIds -MaxItems 12
+                            $summaryFailedIds = New-Object System.Collections.Generic.List[int]
+                            $summaryBackfillRows = New-Object System.Collections.Generic.List[string]
+                            foreach ($row in $autoCloseRows) {
+                                $autoPhaseId = [int]$row.PhaseId
+                                $autoFindings = @(Get-PhaseFindingReferences -PhaseId $autoPhaseId)
+                                if ($autoFindings.Count -eq 0) {
+                                    $autoFindings = @(Get-PhaseFindingReferencesFromRoadmap -PhaseId $autoPhaseId -RoadmapFile $script:ResolvedRoadmapPath)
+                                }
+                                $summary = Ensure-PhaseSummaryEvidence -PhaseId $autoPhaseId -Reason ([string]$row.Reason) -Stage "phase-pass-autoclose-split-artifact" -Cycle $cycle -FindingRefs $autoFindings
+                                if (-not $summary.Ok) {
+                                    $summaryFailedIds.Add($autoPhaseId) | Out-Null
+                                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-pass-autoclose-summary-missing" -Doing ("phase {0} auto-close reverted: summary backfill failed ({1})" -f $autoPhaseId, $summary.Message) -Phase ([string]$autoPhaseId) -IsRunning $false -LogName "-"
+                                    continue
+                                }
+
+                                if ($summary.Created) {
+                                    $summaryBackfillRows.Add(("{0}:{1}" -f $autoPhaseId, (Split-Path -Leaf $summary.Path))) | Out-Null
+                                }
+                            }
+
+                            if ($summaryFailedIds.Count -gt 0) {
+                                $null = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds @($summaryFailedIds.ToArray()) # reopen failed evidence phases
+                            }
+
+                            $effectiveAutoCloseIds = @($autoCloseIds | Where-Object { @($summaryFailedIds.ToArray()) -notcontains $_ } | Sort-Object -Unique)
+                            $autoCloseText = Join-IntList -Values $effectiveAutoCloseIds -MaxItems 12
                             $reasonEntries = @($autoCloseRows | ForEach-Object { "{0}:{1}" -f ([int]$_.PhaseId), ([string]$_.Reason) })
                             $reasonText = Join-StringList -Values $reasonEntries -MaxItems 12
-                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-pass-autoclose-split-artifacts" -Doing ("auto-closed split artifact phases={0} reasons={1} pass={2}" -f $autoCloseText, $reasonText, $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
-                            Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds $autoCloseIds -LogName "-" -Force
+                            $summaryText = Join-StringList -Values @($summaryBackfillRows.ToArray()) -MaxItems 12
+                            $failedText = Join-IntList -Values @($summaryFailedIds.ToArray()) -MaxItems 12
+                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "phase-pass-autoclose-split-artifacts" -Doing ("auto-closed split artifact phases={0} reasons={1} summaries={2} reverted_no_summary={3} pass={4}" -f $autoCloseText, $reasonText, $summaryText, $failedText, $phasePass) -Phase $phaseText -IsRunning $false -LogName "-"
+                            if ($effectiveAutoCloseIds.Count -gt 0) {
+                                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds $effectiveAutoCloseIds -LogName "-" -Force
+                            }
                         }
 
                         $pendingForPass = @(Get-PendingPhases -RoadmapFile $script:ResolvedRoadmapPath)
@@ -3586,12 +3818,20 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                                         if ($closeCandidates.Count -gt 0) {
                                             $closed = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds @($phaseId) -Complete
                                             if ($closed) {
-                                                $autoClosed = $true
-                                                $phaseCompleted = $true
                                                 $closeReason = Join-StringList -Values @($closeCandidates | ForEach-Object { [string]$_.Reason }) -MaxItems 4
-                                                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-autoclose-split-artifact" -Doing ("phase {0} auto-closed after split guard block; reason={1}; findings={2}" -f $phaseId, $closeReason, $findingRefs) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
-                                                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds @($phaseId) -LogName (Split-Path -Leaf $execLog) -Force
-                                                Clear-ExecuteStallCount -PhaseId $phaseId
+                                                $summary = Ensure-PhaseSummaryEvidence -PhaseId $phaseId -Reason $closeReason -Stage "execute-autoclose-split-artifact" -Cycle $cycle -FindingRefs $findingRefsList
+                                                if ($summary.Ok) {
+                                                    $autoClosed = $true
+                                                    $phaseCompleted = $true
+                                                    $summaryFile = if ([string]::IsNullOrWhiteSpace([string]$summary.Path)) { "none" } else { (Split-Path -Leaf $summary.Path) }
+                                                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-autoclose-split-artifact" -Doing ("phase {0} auto-closed after split guard block; reason={1}; findings={2}; summary={3}; summary_backfilled={4}" -f $phaseId, $closeReason, $findingRefs, $summaryFile, $(if ($summary.Created) { "yes" } else { "no" })) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                                                    Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds @($phaseId) -LogName (Split-Path -Leaf $execLog) -Force
+                                                    Clear-ExecuteStallCount -PhaseId $phaseId
+                                                } else {
+                                                    $null = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds @($phaseId) # reopen
+                                                    $phaseCompleted = $false
+                                                    Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-autoclose-summary-missing" -Doing ("phase {0} auto-close reverted: summary backfill failed ({1})" -f $phaseId, $summary.Message) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                                                }
                                             }
                                         }
                                     }
@@ -3628,8 +3868,16 @@ for ($cycle = 1; $cycle -le $MaxOuterLoops; $cycle++) {
                         if ($phaseSplit) {
                             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} split and replaced; new_phases={1}; code_generated={2} findings={3} pass={4}" -f $phaseId, (Join-IntList -Values $splitPhaseIds -MaxItems 12), $(if ($codeEvidence.CodeGenerated) { "yes" } else { "no" }), $findingRefs, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
                         } elseif ($phaseCompleted) {
-                            Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute complete; marking phase complete code_generated=yes new_commits={1} code_files={2} code_files_changed={3} findings={4} finding_code_evidence={5} pass={6}" -f $phaseId, $signal.NewCommits, $signal.CodeFilesNow, $changedFilesText, $findingRefs, $findingCodeEvidence, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
-                            Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds @($phaseId) -LogName (Split-Path -Leaf $execLog) -Force
+                            $summary = Ensure-PhaseSummaryEvidence -PhaseId $phaseId -Reason "execute completion evidence" -Stage "execute-complete" -Cycle $cycle -FindingRefs $findingRefsList
+                            if (-not $summary.Ok) {
+                                $null = Set-RoadmapPhaseCompletionState -RoadmapFile $script:ResolvedRoadmapPath -PhaseIds @($phaseId) # reopen on missing summary evidence
+                                $phaseCompleted = $false
+                                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute-reopen-missing-summary" -Doing ("phase {0} reopened: completion summary missing ({1})" -f $phaseId, $summary.Message) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                            } else {
+                                $summaryFile = if ([string]::IsNullOrWhiteSpace([string]$summary.Path)) { "none" } else { (Split-Path -Leaf $summary.Path) }
+                                Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute complete; marking phase complete code_generated=yes new_commits={1} code_files={2} code_files_changed={3} findings={4} finding_code_evidence={5} summary={6} summary_backfilled={7} pass={8}" -f $phaseId, $signal.NewCommits, $signal.CodeFilesNow, $changedFilesText, $findingRefs, $findingCodeEvidence, $summaryFile, $(if ($summary.Created) { "yes" } else { "no" }), $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
+                                Write-PhaseFindingMapProgress -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage "execute" -MapType "completed" -PhaseIds @($phaseId) -LogName (Split-Path -Leaf $execLog) -Force
+                            }
                         } else {
                             Write-ProgressUpdate -StatusPath $script:ResolvedStatusPath -Cycle $cycle -Stage ("execute-phase-exit-{0}" -f $execExit) -Doing ("phase {0} execute incomplete; remains pending code_generated={1} new_commits={2} code_files={3} code_files_changed={4} findings={5} uncoded_findings={6} pass={7}" -f $phaseId, $(if ($codeEvidence.CodeGenerated) { "yes" } else { "no" }), $signal.NewCommits, $signal.CodeFilesNow, $changedFilesText, $findingRefs, $uncodedFindingsText, $phasePass) -Phase ([string]$phaseId) -IsRunning $false -LogName (Split-Path -Leaf $execLog)
                         }
